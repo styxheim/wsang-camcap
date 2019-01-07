@@ -37,7 +37,6 @@
 
 struct partinfo {
   ev_io ev;
-  bool ev_started;
   uint8_t *p;
   /* descriptor of file to write */
   int fd;
@@ -364,17 +363,19 @@ wqueue_get_free(struct devinfo *dev)
   size_t i = dev->wqueue_idx;
 
   do {
-      wq = &dev->wqueue[dev->wqueue_idx];
-      if (wq->frame_capacity > wq->frame_stored) {
-        dev->wqueue_idx = i;
+      wq = &dev->wqueue[i];
+      if (wq->frame_capacity <= wq->frame_stored)
+        continue;
+      /* update index */
+      dev->wqueue_idx = i;
 
-        if (fail_call_counter)
-          fprintf(stderr, "@ resume writing frames. lost count: %zu\n",
-                          fail_call_counter);
+      if (fail_call_counter)
+        fprintf(stderr, "@ resume writing frames. lost count: %zu\n",
+                        fail_call_counter);
 
-        fail_call_counter = 0u;
-        return wq;
-      }
+      fail_call_counter = 0u;
+      /* return founded buffer */
+      return wq;
   } while ((i = ((i + 1) % dev->wqueue_size)) != dev->wqueue_idx);
 
   if (!fail_call_counter)
@@ -390,6 +391,8 @@ wqueue_cb(struct ev_loop *loop, ev_io *w, int revents)
   struct partinfo *pinfo = (struct partinfo*)w;
   size_t write_len = WQUEUE_WRITE_BLOCK_SZ;
   int r = 0;
+
+  ev_io_stop(loop, &pinfo->ev);
 
   if (pinfo->writed_to_disk + write_len > pinfo->frame_stored_size) {
     write_len = pinfo->frame_stored_size - pinfo->writed_to_disk;
@@ -408,7 +411,6 @@ wqueue_cb(struct ev_loop *loop, ev_io *w, int revents)
   pinfo->writed_to_disk += r;
 
   if (pinfo->writed_to_disk == pinfo->frame_stored_size) {
-    ev_io_stop(loop, &pinfo->ev);
     if (pinfo->frame_capacity == pinfo->frame_stored) {
       close(pinfo->fd);
       pinfo->fd = 0;
@@ -419,6 +421,8 @@ wqueue_cb(struct ev_loop *loop, ev_io *w, int revents)
       fprintf(stderr, "@ free write buffer\n");
 #endif
     }
+  } else {
+    ev_io_start(loop, &pinfo->ev);
   }
 }
 
@@ -439,21 +443,19 @@ capture_process(struct ev_loop *loop, struct devinfo *dev, struct bufinfo *buf)
   else {
     memcpy(pinfo->p + pinfo->frame_stored_size, buf->p, buf->filled);
     pinfo->frame_stored_size += buf->filled;
-    if (!pinfo->ev_started) {
-      if (!pinfo->fd) {
-        char path[256] = {0};
-        snprintf(path, sizeof(path) - 1, "%zu.mjpeg", time(NULL));
-        pinfo->fd = open(path, O_CREAT | O_RDWR | O_NONBLOCK,
-                               S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP);
-        if (pinfo->fd == -1) {
-          fprintf(stderr, "! open(%s) failed. frame dropped: %s\n",
-                          path, strerror(errno));
+    if (!pinfo->fd) {
+      char path[256] = {0};
+      snprintf(path, sizeof(path) - 1, "%zu.mjpeg", time(NULL));
+      pinfo->fd = open(path, O_CREAT | O_RDWR | O_NONBLOCK,
+                             S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP);
+      if (pinfo->fd == -1) {
+        fprintf(stderr, "! open(%s) failed. frame dropped: %s\n",
+                        path, strerror(errno));
 
-        }
       }
       ev_io_init(&pinfo->ev, wqueue_cb, pinfo->fd, EV_WRITE);
-      ev_io_start(loop, &pinfo->ev);
     }
+    ev_io_start(loop, &pinfo->ev);
   }
   pinfo->frame_stored++;
 }
