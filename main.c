@@ -431,6 +431,8 @@ capture_process(struct ev_loop *loop, struct devinfo *dev, struct bufinfo *buf)
 {
   struct partinfo *pinfo = wqueue_get_free(dev);
 
+  static unsigned long long frames_index = 0llu;
+
   if (!pinfo)
     return;
 
@@ -445,7 +447,7 @@ capture_process(struct ev_loop *loop, struct devinfo *dev, struct bufinfo *buf)
     pinfo->frame_stored_size += buf->filled;
     if (!pinfo->fd) {
       char path[256] = {0};
-      snprintf(path, sizeof(path) - 1, "%zu.mjpeg", time(NULL));
+      snprintf(path, sizeof(path) - 1, "frames_%llu.mjpeg", frames_index++);
       pinfo->fd = open(path, O_CREAT | O_RDWR | O_NONBLOCK,
                              S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP);
       if (pinfo->fd == -1) {
