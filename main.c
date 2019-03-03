@@ -1,4 +1,4 @@
-/* vim: ft=c ff=unix fenc=utf-8
+/* vim: ft=c ff=unix fenc=utf-8 ts=2 et
  * file: main.c
  */
 #include <stdio.h>
@@ -72,10 +72,10 @@ struct devinfo {
   /* size of uncompressed frame */
   size_t frame_size;
 
-  size_t frame_per_second;
   size_t frame_width;
   size_t frame_height;
 
+  size_t frame_per_second;
   /* calculated values */
   /* input queue */
   struct bufinfo *queue;
@@ -205,6 +205,39 @@ init_device_wqueue_alloc(struct devinfo *dev)
   return true;
 }
 
+/*
+ * Init some options after setup device: frame_per_second, etc
+ */
+bool
+init_device_options(struct devinfo *dev)
+{
+  struct v4l2_streamparm parm = {0};
+  parm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  if (!xioctl(dev->fd, VIDIOC_G_PARM, &parm)) {
+    return false;
+  }
+
+  if (!(parm.parm.capture.capability & V4L2_CAP_TIMEPERFRAME)) {
+    fprintf(stderr, "! Driver not supported timeperframe feature\n");
+    return false;
+  }
+
+  if (!parm.parm.capture.timeperframe.denominator ||
+      !parm.parm.capture.timeperframe.numerator) {
+      fprintf(stderr,
+              "! Invalid frame per seconds data: denominator=%u, numenator=%u\n",
+              parm.parm.capture.timeperframe.denominator,
+              parm.parm.capture.timeperframe.numerator);
+      return false;
+  }
+
+  dev->frame_per_second = (size_t)(parm.parm.capture.timeperframe.denominator /
+                                   parm.parm.capture.timeperframe.numerator);
+
+  fprintf(stderr, "@ frame per seconds: %zu\n", dev->frame_per_second);
+  return true;
+}
+
 bool
 init_device(struct devinfo *dev)
 {
@@ -215,20 +248,16 @@ init_device(struct devinfo *dev)
   */
   struct v4l2_format fmt = {0};
 
-  memcpy(dev->path, "/dev/video1", 12);
+  memcpy(dev->path, "/dev/video0", 12);
 
   /* FIXME: preset configuration for camera */
 #if 1
-  dev->frame_per_second = 120;
   dev->frame_width = 1280;
   dev->frame_height = 720;
-  dev->frame_size = 1843200;
   dev->frame_size_comp = 250000;
 #else
-  dev->frame_per_second = 240;
   dev->frame_width = 640;
   dev->frame_height = 480;
-  def->frame_size = 614400;
   dev->frame_size_comp = 150000;
 #endif
   
@@ -267,7 +296,7 @@ init_device(struct devinfo *dev)
   fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   fmt.fmt.pix.width       = dev->frame_width;
   fmt.fmt.pix.height      = dev->frame_height;
-  fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
+  fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_MJPEG;
   fmt.fmt.pix.field       = V4L2_FIELD_INTERLACED;
 
   if (!xioctl(dev->fd, VIDIOC_S_FMT, &fmt)) {
@@ -275,24 +304,31 @@ init_device(struct devinfo *dev)
     return false;
   }
 
-  if (dev->frame_size != fmt.fmt.pix.sizeimage) {
-      fprintf(stderr, "! invalid presetted value `frame_size`: %zu != %u",
-              dev->frame_size, fmt.fmt.pix.sizeimage);
-      return false;
-  }
+  dev->frame_size = fmt.fmt.pix.sizeimage;
 
-  if (dev->frame_size_comp > fmt.fmt.pix.sizeimage) {
-      fprintf(stderr, "! invalid presetted value `frame_size_comp`: %zu > %u",
-              dev->frame_size_comp, fmt.fmt.pix.sizeimage);
-      return false;
-  }
-
-  fprintf(stderr, "@ camera options:\n");
+  fprintf(stderr, "@ image format options:\n");
   fprintf(stderr, "@  image: %"PRIu32"x%"PRIu32"\n",
           fmt.fmt.pix.width,
           fmt.fmt.pix.height);
   fprintf(stderr, "@  size : %"PRIu32"\n", fmt.fmt.pix.sizeimage);
   fprintf(stderr, "@  flags: 0x%08"PRIx32"\n", fmt.fmt.pix.flags);
+  fprintf(stderr, "@  pixel format: '%.4s'\n", (char*)&fmt.fmt.pix.pixelformat);
+
+  /* driver can ignore setup frames */
+  if (fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_MJPEG) {
+    fprintf(stderr,
+            "@ compressed frames: %zu bytes per frame\n",
+            dev->frame_size_comp);
+  } else {
+    fprintf(stderr,
+            "@ uncompressed frames: %zu bytes per frame\n",
+            dev->frame_size);
+
+    dev->frame_size_comp = dev->frame_size;
+  }
+
+  if (!init_device_options(dev))
+    return false;
 
   fprintf(stderr, "* camera opened\n");
 
@@ -309,12 +345,12 @@ bool
 capture(struct devinfo *dev)
 {
   struct v4l2_buffer buf = {0};
-	struct v4l2_requestbuffers req = {0};
+  struct v4l2_requestbuffers req = {0};
   size_t i;
 
   req.count = dev->queue_size;
-	req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-	req.memory = V4L2_MEMORY_USERPTR;
+  req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  req.memory = V4L2_MEMORY_USERPTR;
 
   if (!xioctl(dev->fd, VIDIOC_REQBUFS, &req)) {
     if (errno == EINVAL) {
