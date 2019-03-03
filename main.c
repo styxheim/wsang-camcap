@@ -13,6 +13,7 @@
 #include <time.h>
 #include <strings.h>
 #include <sys/ioctl.h>
+#include <sys/time.h>
 
 #include <ev.h>
 
@@ -85,7 +86,19 @@ struct devinfo {
   struct partinfo *wqueue;
   size_t wqueue_idx;
   size_t wqueue_size;
+
+  /* counters */
+  struct {
+    /* time of send STREAMON */
+    struct timeval start_time;
+    /* time of receive first frame after STREAMON */
+    struct timeval first_frame_time;
+    size_t frames_arrived;
+  } c;
 } devinfo;
+
+#define TIMEVAL_FMT "%zu.%.06zu"
+#define TIMEVAL_ARGS(_tv) (_tv)->tv_sec, (_tv)->tv_usec
 
 static inline int
 xioctl(int fh, unsigned long int request, void *arg)
@@ -381,12 +394,17 @@ capture(struct devinfo *dev)
   }
 
   /* start capture */
+  memset(&dev->c, 0, sizeof(dev->c));
+  gettimeofday(&dev->c.start_time, NULL);
+
   if (!xioctl(dev->fd, VIDIOC_STREAMON, &buf.type)) {
     perror("! ioctl(VIDIOC_STREAMON)");
     return false;
   }
 
-  fprintf(stderr, "* capture started\n");
+  fprintf(stderr,
+          "* capture started at "TIMEVAL_FMT"\n",
+          TIMEVAL_ARGS(&dev->c.start_time));
 
   return true;
 }
@@ -483,7 +501,7 @@ capture_process(struct ev_loop *loop, struct devinfo *dev, struct bufinfo *buf)
     pinfo->frame_stored_size += buf->filled;
     if (!pinfo->fd) {
       char path[256] = {0};
-      snprintf(path, sizeof(path) - 1, "frames_%llu.mjpeg", frames_index++);
+      snprintf(path, sizeof(path) - 1, "frames_%010llu.mjpeg", frames_index++);
       pinfo->fd = open(path, O_CREAT | O_RDWR | O_NONBLOCK,
                              S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP);
       if (pinfo->fd == -1) {
@@ -491,6 +509,7 @@ capture_process(struct ev_loop *loop, struct devinfo *dev, struct bufinfo *buf)
                         path, strerror(errno));
 
       }
+      /* start write event on part */
       ev_io_init(&pinfo->ev, wqueue_cb, pinfo->fd, EV_WRITE);
     }
     ev_io_start(loop, &pinfo->ev);
@@ -501,43 +520,59 @@ capture_process(struct ev_loop *loop, struct devinfo *dev, struct bufinfo *buf)
 static void
 camera_cb(struct ev_loop *loop, ev_io *w, int revents)
 {
-  struct v4l2_buffer buf = {0};
+  struct v4l2_buffer buf = {
+                            .type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+                            .memory = V4L2_MEMORY_USERPTR
+                           };
   struct devinfo *dev = (struct devinfo*)w;
+#if LOG_NOISY
   struct timeval tvr = {0};
   struct timeval host_tv_cur = {0};
   struct timeval host_tvr = {0};
   static struct timeval tv = {0};
   static struct timeval host_tv = {0};
-  
-  buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  buf.memory = V4L2_MEMORY_USERPTR;
+#endif
 
+#if LOG_NOISY
   gettimeofday(&host_tv_cur, NULL);
+#endif
+
+  if (!dev->c.frames_arrived) {
+    struct timeval fftv = {0};
+    gettimeofday(&dev->c.first_frame_time, NULL);
+    timersub(&dev->c.first_frame_time, &dev->c.start_time, &fftv);
+    /* update information about first frame */
+    fprintf(stderr,
+            "@ first frame arrived in: "TIMEVAL_FMT" seconds\n",
+            TIMEVAL_ARGS(&fftv));
+  }
+
+  dev->c.frames_arrived++;
 
   if (!xioctl(dev->fd, VIDIOC_DQBUF, &buf)) {
     fprintf(stderr, "! ioctl(VIDIOC_DQBUF) failed: %s\n", strerror(errno));
   } else {
     dev->queued--;
+    dev->queue[buf.index].filled = buf.bytesused;
+#if LOG_NOISY
     timersub(&buf.timestamp, &tv, &tvr);
     timersub(&host_tv_cur, &host_tv, &host_tvr);
     memcpy(&tv, &buf.timestamp, sizeof(tv));
     memcpy(&host_tv, &host_tv_cur, sizeof(host_tv));
-    dev->queue[buf.index].filled = buf.bytesused;
-#if LOG_NOISY
     fprintf(stderr,
             "@ buf: index=%"PRIu32", "
             "bytesused=%"PRIu32", "
             "flags=0x%08"PRIx32", "
             "sequence=%"PRIu32", "
             "queued=%zu, "
-            "%ld.%06ld, from last: %ld.%06ld, "
-            "host last: %ld.%06ld"
+            TIMEVAL_FMT", from last: "TIMEVAL_FMT", "
+            "host last: " TIMEVAL_FMT
             "\n",
             buf.index, buf.bytesused, buf.flags, buf.sequence,
             dev->queued,
-            buf.timestamp.tv_sec, buf.timestamp.tv_usec,
-            tvr.tv_sec, tvr.tv_usec,
-            host_tvr.tv_sec, host_tvr.tv_usec);
+            TIMEVAL_ARGS(&buf.timestamp),
+            TIMEVAL_ARGS(&tvr),
+            TIMEVAL_ARGS(&host_tvr));
 #endif
   }
 
