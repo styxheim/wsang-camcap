@@ -7,6 +7,12 @@
 #include "circle_buffer.h"
 
 bool
+cbf_is_empty(struct circle_buffer *cbf)
+{
+  return cbf->free_space == cbf->capacity;
+}
+
+bool
 cbf_init(struct circle_buffer *cbf, size_t capacity)
 {
   memset(cbf, 0u, sizeof(*cbf));
