@@ -36,6 +36,33 @@
 # define BUFFERS_SWAP_COUNT VIDEO_MAX_FRAME
 #endif
 
+#define timespecfix(_res)                 \
+  do {                                    \
+    if ((_res)->tv_nsec < 0) {            \
+      (_res)->tv_sec--;                   \
+      (_res)->tv_nsec += 1000000000;      \
+    }                                     \
+    if ((_res)->tv_nsec > 1000000000) {    \
+      (_res)->tv_sec++;                   \
+      (_res)->tv_nsec -= 1000000000;      \
+    }                                     \
+  } while (0)
+
+#define timespecsub(_a, _b, _res)                     \
+  do {                                                \
+    (_res)->tv_sec = (_a)->tv_sec - (_b)->tv_sec;     \
+    (_res)->tv_nsec = (_a)->tv_nsec - (_b)->tv_nsec;  \
+    timespecfix(_res);                                \
+  } while (0)
+
+#define timespecadd(_a, _b, _res)                     \
+  do {                                                \
+    (_res)->tv_sec = (_a)->tv_sec + (_b)->tv_sec;     \
+    (_res)->tv_nsec = (_a)->tv_nsec + (_b)->tv_nsec;  \
+    timespecfix(_res);                                \
+  } while (0)
+
+
 struct partinfo {
   ev_io ev;
   uint8_t *p;
@@ -90,15 +117,15 @@ struct devinfo {
   /* counters */
   struct {
     /* time of send STREAMON */
-    struct timeval start_time;
+    struct timespec start_time;
     /* time of receive first frame after STREAMON */
-    struct timeval first_frame_time;
+    struct timespec first_frame_time;
     size_t frames_arrived;
   } c;
 } devinfo;
 
-#define TIMEVAL_FMT "%zu.%.06zu"
-#define TIMEVAL_ARGS(_tv) (_tv)->tv_sec, (_tv)->tv_usec
+#define TV_FMT "%zu.%.09ld"
+#define TV_ARGS(_tv) (_tv)->tv_sec, (_tv)->tv_nsec
 
 static inline int
 xioctl(int fh, unsigned long int request, void *arg)
@@ -395,7 +422,7 @@ capture(struct devinfo *dev)
 
   /* start capture */
   memset(&dev->c, 0, sizeof(dev->c));
-  gettimeofday(&dev->c.start_time, NULL);
+  clock_gettime(CLOCK_MONOTONIC, &dev->c.start_time);
 
   if (!xioctl(dev->fd, VIDIOC_STREAMON, &buf.type)) {
     perror("! ioctl(VIDIOC_STREAMON)");
@@ -403,8 +430,8 @@ capture(struct devinfo *dev)
   }
 
   fprintf(stderr,
-          "* capture started at "TIMEVAL_FMT"\n",
-          TIMEVAL_ARGS(&dev->c.start_time));
+          "* capture started at "TV_FMT"\n",
+          TV_ARGS(&dev->c.start_time));
 
   return true;
 }
@@ -526,25 +553,25 @@ camera_cb(struct ev_loop *loop, ev_io *w, int revents)
                            };
   struct devinfo *dev = (struct devinfo*)w;
 #if LOG_NOISY
-  struct timeval tvr = {0};
-  struct timeval host_tv_cur = {0};
-  struct timeval host_tvr = {0};
-  static struct timeval tv = {0};
-  static struct timeval host_tv = {0};
+  struct timespec tvr = {0};
+  struct timespec host_tv_cur = {0};
+  struct timespec host_tvr = {0};
+  static struct timespec tv = {0};
+  static struct timespec host_tv = {0};
 #endif
 
 #if LOG_NOISY
-  gettimeofday(&host_tv_cur, NULL);
+  clock_gettime(CLOCK_MONOTONIC, &host_tv_cur);
 #endif
 
   if (!dev->c.frames_arrived) {
-    struct timeval fftv = {0};
-    gettimeofday(&dev->c.first_frame_time, NULL);
-    timersub(&dev->c.first_frame_time, &dev->c.start_time, &fftv);
+    struct timespec fftv = {0};
+    clock_gettime(CLOCK_MONOTONIC, &dev->c.first_frame_time);
+    timespecsub(&dev->c.first_frame_time, &dev->c.start_time, &fftv);
     /* update information about first frame */
     fprintf(stderr,
-            "@ first frame arrived in: "TIMEVAL_FMT" seconds\n",
-            TIMEVAL_ARGS(&fftv));
+            "@ first frame arrived in: "TV_FMT" seconds\n",
+            TV_ARGS(&fftv));
   }
 
   dev->c.frames_arrived++;
@@ -555,8 +582,8 @@ camera_cb(struct ev_loop *loop, ev_io *w, int revents)
     dev->queued--;
     dev->queue[buf.index].filled = buf.bytesused;
 #if LOG_NOISY
-    timersub(&buf.timestamp, &tv, &tvr);
-    timersub(&host_tv_cur, &host_tv, &host_tvr);
+    timespecsub(&buf.timestamp, &tv, &tvr);
+    timespecsub(&host_tv_cur, &host_tv, &host_tvr);
     memcpy(&tv, &buf.timestamp, sizeof(tv));
     memcpy(&host_tv, &host_tv_cur, sizeof(host_tv));
     fprintf(stderr,
@@ -565,14 +592,14 @@ camera_cb(struct ev_loop *loop, ev_io *w, int revents)
             "flags=0x%08"PRIx32", "
             "sequence=%"PRIu32", "
             "queued=%zu, "
-            TIMEVAL_FMT", from last: "TIMEVAL_FMT", "
-            "host last: " TIMEVAL_FMT
+            TV_FMT", from last: "TV_FMT", "
+            "host last: " TV_FMT
             "\n",
             buf.index, buf.bytesused, buf.flags, buf.sequence,
             dev->queued,
-            TIMEVAL_ARGS(&buf.timestamp),
-            TIMEVAL_ARGS(&tvr),
-            TIMEVAL_ARGS(&host_tvr));
+            TV_ARGS(&buf.timestamp),
+            TV_ARGS(&tvr),
+            TV_ARGS(&host_tvr));
 #endif
   }
 
