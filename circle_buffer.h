@@ -27,30 +27,30 @@ bool
 cbf_is_empty(struct circle_buffer *cbf);
 
 bool
-cbf_init(struct circle_buffer *cb, size_t capacity);
+cbf_init(struct circle_buffer *cbf, size_t capacity);
 
 void
-cbf_dump(struct circle_buffer *cb);
+cbf_dump(struct circle_buffer *cbf);
 
 /*
  * store data to buffer
  * return stored len
  */
 size_t
-cbf_save(struct circle_buffer *cb, uint8_t *p, size_t len);
+cbf_save(struct circle_buffer *cbf, uint8_t *p, size_t len);
 
 /*
  * get data from buffer, without free readed data (need discard to free)
  * return readed data
  */
 size_t
-cbf_get(struct circle_buffer *cb, uint8_t *p, size_t len);
+cbf_get(struct circle_buffer *cbf, uint8_t *p, size_t len);
 
 /* discard data in buffer
  * return discarded len
  */
 size_t
-cbf_discard(struct circle_buffer *cb, size_t len);
+cbf_discard(struct circle_buffer *cbf, size_t len);
 
 #endif /* _CIRCLE_BUFFER_1551711442_H_ */
 
