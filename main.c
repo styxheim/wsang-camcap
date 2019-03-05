@@ -39,37 +39,24 @@
 # define BUFFERS_SWAP_COUNT VIDEO_MAX_FRAME
 #endif
 
-#define timespecfix(_res)                 \
-  do {                                    \
-    if ((_res)->tv_nsec < 0) {            \
-      (_res)->tv_sec--;                   \
-      (_res)->tv_nsec += 1000000000;      \
-    }                                     \
-    if ((_res)->tv_nsec > 1000000000) {    \
-      (_res)->tv_sec++;                   \
-      (_res)->tv_nsec -= 1000000000;      \
-    }                                     \
-  } while (0)
+#define FI_INIT_VALUE {.key = {'A', 'Z'}};
 
-#define timespecsub(_a, _b, _res)                     \
-  do {                                                \
-    (_res)->tv_sec = (_a)->tv_sec - (_b)->tv_sec;     \
-    (_res)->tv_nsec = (_a)->tv_nsec - (_b)->tv_nsec;  \
-    timespecfix(_res);                                \
-  } while (0)
-
-#define timespecadd(_a, _b, _res)                     \
-  do {                                                \
-    (_res)->tv_sec = (_a)->tv_sec + (_b)->tv_sec;     \
-    (_res)->tv_nsec = (_a)->tv_nsec + (_b)->tv_nsec;  \
-    timespecfix(_res);                                \
-  } while (0)
-
+struct __attribute__((packed)) frame_index {
+  char key[2];
+  struct {
+    uint64_t sec;
+    uint16_t nsec;
+  } tv;
+  uint64_t offset;
+  uint32_t size;
+};
 
 struct wbuf {
   ev_io ev;
   int fd;
+
   struct circle_buffer cbf;
+  uint64_t written;
 };
 
 struct bufinfo {
@@ -108,15 +95,15 @@ struct devinfo {
   /* counters */
   struct {
     /* time of send STREAMON */
-    struct timespec start_time;
+    struct timeval start_time;
     /* time of receive first frame after STREAMON */
-    struct timespec first_frame_time;
+    struct timeval first_frame_time;
     size_t frames_arrived;
   } c;
 } devinfo;
 
-#define TV_FMT "%zu.%.09ld"
-#define TV_ARGS(_tv) (_tv)->tv_sec, (_tv)->tv_nsec
+#define TV_FMT "%zu.%.06ld"
+#define TV_ARGS(_tv) (_tv)->tv_sec, (_tv)->tv_usec
 
 static inline int
 xioctl(int fh, unsigned long int request, void *arg)
@@ -134,6 +121,15 @@ xioctl(int fh, unsigned long int request, void *arg)
     return false;
 
   return true;
+}
+
+static void
+get_precise_time(struct timeval *tv)
+{
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  tv->tv_sec = ts.tv_sec;
+  tv->tv_usec = ts.tv_nsec / 1000;
 }
 
 void
@@ -266,7 +262,7 @@ init_device(struct devinfo *dev)
   dev->frame_width = 640;
   dev->frame_height = 480;
 #endif
-  dev->disk_frame_buffer_size = 90000000; /* 90 MiB */
+  dev->disk_frame_buffer_size = 60000000; /* 60 MiB */
   dev->disk_index_buffer_size = 1048576; /* 1MB */
   
   fprintf(stderr, "* open cam: %s\n", dev->path);
@@ -382,7 +378,7 @@ capture(struct devinfo *dev)
 
   /* start capture */
   memset(&dev->c, 0, sizeof(dev->c));
-  clock_gettime(CLOCK_MONOTONIC, &dev->c.start_time);
+  get_precise_time(&dev->c.start_time);
 
   if (!xioctl(dev->fd, VIDIOC_STREAMON, &buf.type)) {
     perror("! ioctl(VIDIOC_STREAMON)");
@@ -398,7 +394,7 @@ capture(struct devinfo *dev)
 
 /* write cb for buffer */
 static void
-wqueue_frames_cb(struct ev_loop *loop, ev_io *w, int revents)
+wqueue_cb(struct ev_loop *loop, ev_io *w, int revents)
 {
   struct wbuf *wb = (struct wbuf*)w;
   uint8_t p[WQUEUE_WRITE_BLOCK_SZ] = {0};
@@ -406,11 +402,6 @@ wqueue_frames_cb(struct ev_loop *loop, ev_io *w, int revents)
   ssize_t wlen = 0;
 
   len = cbf_get(&wb->cbf, p, len);
-  if (!len) {
-    /* stop event when buffer is empty */
-    ev_io_stop(loop, w);
-    return;
-  }
 
   wlen = write(wb->fd, p, len);
   if (wlen <= 0) {
@@ -421,26 +412,54 @@ wqueue_frames_cb(struct ev_loop *loop, ev_io *w, int revents)
   }
 
   cbf_discard(&wb->cbf, wlen);
-  /* TODO: write index */
+  if (cbf_is_empty(&wb->cbf)) {
+    /* stop event when buffer is empty */
+    ev_io_stop(loop, w);
+    return;
+  }
 }
 
 void
 capture_process(struct ev_loop *loop, struct devinfo *dev,
                 struct v4l2_buffer *cam_buf, uint8_t *p)
 {
-  bool need_started = cbf_is_empty(&dev->wqueue_frame.cbf);
+  bool need_start_fb = cbf_is_empty(&dev->wqueue_frame.cbf);
+  bool need_start_ib = cbf_is_empty(&dev->wqueue_index.cbf);
+  struct frame_index fi = FI_INIT_VALUE;
+
+  fi.tv.sec = (uint64_t)cam_buf->timestamp.tv_sec;
+  fi.tv.nsec = (uint16_t)(cam_buf->timestamp.tv_usec / 1000);
+  fi.offset = dev->wqueue_frame.written;
+  fi.size = cam_buf->bytesused;
+
+  if (need_start_ib) {
+    printf("ib check = %zu\n", dev->wqueue_index.cbf.free_space);
+  }
 
   if (!cbf_save(&dev->wqueue_frame.cbf, p, cam_buf->bytesused)) {
     fprintf(stderr, "! buffer has no free space. Frame dropped\n");
-    exit(1);
+    /* TODO: count dropped frames, reduce prints */
     return;
   }
 
-  /* TODO: need_started */
-  if (need_started) {
+  if (!cbf_save(&dev->wqueue_index.cbf, (uint8_t*)&fi, sizeof(fi))) {
+    fprintf(stderr, "! buffer has no free space. Frame dropped\n");
+    /* TODO: count dropped frames, reduce prints */
+    return;
+  }
+
+  dev->wqueue_frame.written += cam_buf->bytesused;
+
+  if (need_start_fb) {
     ev_io_init(&dev->wqueue_frame.ev,
-               wqueue_frames_cb, dev->wqueue_frame.fd, EV_WRITE);
+               wqueue_cb, dev->wqueue_frame.fd, EV_WRITE);
     ev_io_start(loop, &dev->wqueue_frame.ev);
+  }
+
+  if (need_start_ib) {
+    ev_io_init(&dev->wqueue_index.ev,
+               wqueue_cb, dev->wqueue_index.fd, EV_WRITE);
+    ev_io_start(loop, &dev->wqueue_index.ev);
   }
 }
 
@@ -453,21 +472,21 @@ camera_cb(struct ev_loop *loop, ev_io *w, int revents)
                            };
   struct devinfo *dev = (struct devinfo*)w;
 #if LOG_NOISY
-  struct timespec tvr = {0};
-  struct timespec host_tv_cur = {0};
-  struct timespec host_tvr = {0};
-  static struct timespec tv = {0};
-  static struct timespec host_tv = {0};
+  struct timeval tvr = {0};
+  struct timeval host_tv_cur = {0};
+  struct timeval host_tvr = {0};
+  static struct timeval tv = {0};
+  static struct timeval host_tv = {0};
 #endif
 
 #if LOG_NOISY
-  clock_gettime(CLOCK_MONOTONIC, &host_tv_cur);
+  get_precise_time(&host_tv_cur);
 #endif
 
   if (!dev->c.frames_arrived) {
-    struct timespec fftv = {0};
-    clock_gettime(CLOCK_MONOTONIC, &dev->c.first_frame_time);
-    timespecsub(&dev->c.first_frame_time, &dev->c.start_time, &fftv);
+    struct timeval fftv = {0};
+    get_precise_time(&dev->c.first_frame_time);
+    timersub(&dev->c.first_frame_time, &dev->c.start_time, &fftv);
     /* update information about first frame */
     fprintf(stderr,
             "@ first frame arrived in: "TV_FMT" seconds\n",
@@ -481,8 +500,8 @@ camera_cb(struct ev_loop *loop, ev_io *w, int revents)
   } else {
     dev->queued--;
 #if LOG_NOISY
-    timespecsub(&buf.timestamp, &tv, &tvr);
-    timespecsub(&host_tv_cur, &host_tv, &host_tvr);
+    timersub(&buf.timestamp, &tv, &tvr);
+    timersub(&host_tv_cur, &host_tv, &host_tvr);
     memcpy(&tv, &buf.timestamp, sizeof(tv));
     memcpy(&host_tv, &host_tv_cur, sizeof(host_tv));
     fprintf(stderr,
