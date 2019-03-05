@@ -3,8 +3,10 @@
 LIBS+=-lev
 CFLAGS+=-g -Wall -Werror -pedantic
 
-all: capture
+all: capture dump
 
 capture: src/main.c src/circle_buffer.c
 	${CC} -o $@ ${CFLAGS} $^ ${LIBS}
 
+dump: src/dump.c
+	${CC} -o $@ ${CFLAGS} $^ ${LIBS}

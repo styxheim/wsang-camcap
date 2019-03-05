@@ -5,7 +5,6 @@
 #define _FRAME_INDEX_1551786768_H_
 
 #include <byteswap.h> 
-#define FI_INIT_VALUE {.key = {'A', 'Z'}};
 
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 # define BSWAP_BE16(_v) bswap_16(_v)
@@ -18,6 +17,9 @@
 #else
 # error "what?"
 #endif
+
+#define FI_INIT_VALUE {.key = {'A', 'Z'}};
+#define FI_KEY_VALID(_fi) ((_fi)->key[0] == 'A' && (_fi)->key[1] == 'Z')
 
 typedef struct __attribute__((packed)) frame_index {
   char key[2];
