@@ -23,7 +23,7 @@
 
 struct __attribute__((packed)) timebin {
   uint64_t sec_be64;
-  uint16_t nsec_be16;
+  uint32_t usec_be32;
 };
 
 /* index record for each frame */
@@ -32,6 +32,7 @@ typedef struct __attribute__((packed)) frame_index {
   struct timebin tv;
   uint64_t offset_be64;
   uint32_t size_be32;
+  uint64_t seq_be64;
 } frame_index_t;
 
 #define FH_INIT_VALUE {.key = {'S', 'W', 'I', 'C'}}
@@ -48,19 +49,21 @@ typedef struct __attribute__((packed)) frame_header {
 } frame_header_t;
 
 static inline void
-timeval_to_timebin(struct timebin *tb, struct timeval *tv)
+timebin_from_timeval(struct timebin *tb, struct timeval *tv)
 {
   tb->sec_be64 = BSWAP_BE64((uint64_t)tv->tv_sec);
-  tb->nsec_be16 = BSWAP_BE16((uint16_t)(tv->tv_usec / 1000));
+  tb->usec_be32 = BSWAP_BE32((uint32_t)(tv->tv_usec));
 }
 
-static inline float
-timebin_to_float(struct timebin *tb)
+static inline void
+timebin_to_timeval(struct timebin *tb, struct timeval *tv)
 {
-  return (float)BSWAP_BE64(tb->sec_be64) +
-         (float)BSWAP_BE16(tb->nsec_be16) / 1000;
-
+  tv->tv_sec = BSWAP_BE64(tb->sec_be64);
+  tv->tv_usec = BSWAP_BE32(tb->usec_be32);
 }
+
+#define TV_FMT "%"PRIu64".%.06"PRIu64
+#define TV_ARGS(_tv) ((uint64_t)(_tv)->tv_sec), ((uint64_t)(_tv)->tv_usec)
 
 #endif /* _FRAME_INDEX_1551786768_H_ */
 

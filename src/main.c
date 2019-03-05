@@ -91,12 +91,10 @@ struct devinfo {
     struct timeval start_time;
     /* time of receive first frame after STREAMON */
     struct timeval first_frame_time;
+    struct timeval first_frame_time_utc;
     size_t frames_arrived;
   } c;
 } devinfo;
-
-#define TV_FMT "%"PRIu64".%.06"PRIu64
-#define TV_ARGS(_tv) ((uint64_t)(_tv)->tv_sec), ((uint64_t)(_tv)->tv_usec)
 
 static inline int
 xioctl(int fh, unsigned long int request, void *arg)
@@ -447,9 +445,10 @@ capture_process(struct ev_loop *loop, struct devinfo *dev,
 {
   frame_index_t fi = FI_INIT_VALUE;
 
-  timeval_to_timebin(&fi.tv, &cam_buf->timestamp);
+  timebin_from_timeval(&fi.tv, &cam_buf->timestamp);
   fi.offset_be64 = BSWAP_BE64(dev->wqueue_frame.written);
   fi.size_be32 = BSWAP_BE32(cam_buf->bytesused);
+  fi.seq_be64 = BSWAP_BE64((uint64_t)dev->c.frames_arrived);
 
   if (!wbf_write(loop, &dev->wqueue_frame, p, cam_buf->bytesused)) {
     fprintf(stderr, "! buffer has no free space. Frame dropped\n");
@@ -466,16 +465,13 @@ capture_process(struct ev_loop *loop, struct devinfo *dev,
 
 
 static bool
-make_frame_header(struct ev_loop *loop,
-                  struct devinfo *dev,
-                  struct timeval *ltime,
-                  struct timeval *gtime)
+make_frame_header(struct ev_loop *loop, struct devinfo *dev)
 {
   struct frame_header fh = FH_INIT_VALUE;
 
   fh.fps = (uint8_t)dev->cam_info.frame_per_second;
-  timeval_to_timebin(&fh.ltime, ltime);
-  timeval_to_timebin(&fh.gtime, gtime);
+  timebin_from_timeval(&fh.ltime, &dev->c.first_frame_time);
+  timebin_from_timeval(&fh.gtime, &dev->c.first_frame_time_utc);
   return wbf_write(loop, &dev->wqueue_index, (uint8_t*)&fh, sizeof(fh));
 }
 
@@ -501,16 +497,16 @@ camera_cb(struct ev_loop *loop, ev_io *w, int revents)
 
   if (!dev->c.frames_arrived) {
     struct timeval fftv = {0};
-    struct timeval gfftv = {0};
+    /* get frame time */
     get_precise_time(&dev->c.first_frame_time);
-    gettimeofday(&gfftv, NULL);
+    gettimeofday(&dev->c.first_frame_time_utc, NULL);
     timersub(&dev->c.first_frame_time, &dev->c.start_time, &fftv);
     /* update information about first frame */
     fprintf(stderr,
             "@ first frame arrived in: "TV_FMT" seconds\n",
             TV_ARGS(&fftv));
 
-    if (!make_frame_header(loop, dev, &fftv, &gfftv)) {
+    if (!make_frame_header(loop, dev)) {
       fprintf(stderr, "! Frame header not created\n");
       ev_break(loop, EVBREAK_ALL);
     }

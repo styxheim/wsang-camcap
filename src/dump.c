@@ -9,7 +9,7 @@
 #include <unistd.h>
 #include <inttypes.h>
 #include <fcntl.h>
-
+#include <sys/time.h>
 
 #include "frame_index.h"
 
@@ -19,11 +19,26 @@
 bool
 dump_fh(frame_header_t *fh)
 {
-  float tdiff = timebin_to_float(&fh->gtime) - timebin_to_float(&fh->ltime);
-  printf("# HEADER < fps = %u, time diff from global = %s%.3f >\n",
+  struct timeval tv_diff = {0};
+  struct timeval ltime;
+  struct timeval gtime;
+  char symbol = '+';
+  timebin_to_timeval(&fh->ltime, &ltime);
+  timebin_to_timeval(&fh->gtime, &gtime);
+
+  if (timercmp(&ltime, &gtime, >)) {
+    timersub(&ltime, &gtime, &tv_diff);
+    symbol = '-';
+  } else if (timercmp(&ltime, &gtime, <)) {
+    timersub(&gtime, &ltime, &tv_diff);
+    symbol = '+';
+  }
+
+  printf("# HEADER < fps = %u, local time = "TV_FMT", UTC diff = %c"TV_FMT" >\n",
          fh->fps,
-         tdiff > 0 ? "+" : "",
-         tdiff);
+         TV_ARGS(&ltime),
+         symbol,
+         TV_ARGS(&tv_diff));
   return true;
 }
 
@@ -36,11 +51,17 @@ bool
 dump_fi(frame_index_t *pfi, frame_index_t *fi)
 {
   static long long unsigned int seq = 1u;
-  static float second = 0.f;
   static unsigned fps = 0u;
+  int errors = 0;
 
-  float time = timebin_to_float(&fi->tv);
-  float ptime = timebin_to_float(&pfi->tv);
+  const struct timeval one_second = {.tv_sec = 1};
+  struct timeval second;
+  struct timeval tv_diff = {0};
+  struct timeval ctime;
+  struct timeval ptime;
+
+  timebin_to_timeval(&fi->tv, &ctime);
+  timebin_to_timeval(&pfi->tv, &ptime);
 
   uint64_t offset = BSWAP_BE64(fi->offset_be64);
   uint32_t size = BSWAP_BE32(fi->size_be32);
@@ -48,37 +69,45 @@ dump_fi(frame_index_t *pfi, frame_index_t *fi)
   uint64_t poffset = BSWAP_BE64(pfi->offset_be64);
   uint32_t psize = BSWAP_BE32(pfi->size_be32);
 
+  uint64_t frame_seq = BSWAP_BE64(fi->seq_be64);
+
   if (!FI_KEY_VALID(fi)) {
     printf("[%6llu] invalid magic key\n", seq);
-    return false;
+    errors++;
   }
 
-  if (BSWAP_BE16(fi->tv.nsec_be16) > 1000) {
-    printf("[%6llu] invalid microseconds second value\n", seq);
-    return false;
+  if (BSWAP_BE16(fi->tv.usec_be32) > 1000000) {
+    printf("[%6llu] invalid microseconds value: %"PRIu32"\n",
+           seq, BSWAP_BE16(fi->tv.usec_be32));
+    errors++;
   }
 
-  if (ptime > time) {
-    printf("[%6llu] frame time invalid (%.3f < %.3f)\n", seq, time, ptime);
-    return false;
+  if (!timercmp(&ptime, &ctime, <)) {
+    printf("[%6llu] frame time invalid ("TV_FMT" < "TV_FMT")\n",
+           seq, TV_ARGS(&ctime), TV_ARGS(&ptime));
+    errors++;
   }
 
   if (poffset + psize > offset) {
     printf("[%6llu] offset value invalid: previous frame end > offset: %"PRIu64" > %"PRIu64,
            seq, poffset + psize, offset);
-    return false;
+    errors++;
   }
 
-  printf("[%6llu] { time = %.3f, offset = %10"PRIu64", size = %10"PRIu32" } time diff: %.3f\n",
-         seq, time, offset, size, time - ptime);
+  timersub(&ctime, &ptime, &tv_diff);
+  printf("[%6llu] { %6"PRIu64" time = "TV_FMT", offset = %10"PRIu64", size = %10"PRIu32" } time diff: "TV_FMT"\n",
+         seq, frame_seq, TV_ARGS(&ctime), offset, size, TV_ARGS(&tv_diff));
 
-  second += time - ptime;
+  timeradd(&second, &tv_diff, &second);
   fps++;
-  if (second >= 1.0f) {
-    printf("# fps = %u, time counted = %.3f\n", fps, second);
-    second = 0.0f;
+  if (!timercmp(&second, &one_second, <)) {
+    printf("# fps = %u, time counted = "TV_FMT"\n", fps, TV_ARGS(&second));
+    timerclear(&second);
     fps = 0u;
   }
+
+  if (errors)
+    return false;
 
   seq++;
   memcpy(pfi, fi, sizeof(*fi));
