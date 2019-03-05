@@ -81,6 +81,10 @@ struct devinfo {
   struct wbuf wqueue_frame;
   struct wbuf wqueue_index;
 
+  struct {
+    unsigned frame_per_second;
+  } cam_info;
+
   /* counters */
   struct {
     /* time of send STREAMON */
@@ -91,8 +95,8 @@ struct devinfo {
   } c;
 } devinfo;
 
-#define TV_FMT "%zu.%.06ld"
-#define TV_ARGS(_tv) (_tv)->tv_sec, (_tv)->tv_usec
+#define TV_FMT "%"PRIu64".%.06"PRIu64
+#define TV_ARGS(_tv) ((uint64_t)(_tv)->tv_sec), ((uint64_t)(_tv)->tv_usec)
 
 static inline int
 xioctl(int fh, unsigned long int request, void *arg)
@@ -229,6 +233,8 @@ init_device_options(struct devinfo *dev)
                  parm.parm.capture.timeperframe.numerator);
 
   fprintf(stderr, "@ frame per seconds: %zu\n", fps);
+
+  dev->cam_info.frame_per_second = fps;
 
   cntr.id = V4L2_CID_EXPOSURE_AUTO_PRIORITY;
   cntr.value = 0;
@@ -418,44 +424,59 @@ wqueue_cb(struct ev_loop *loop, ev_io *w, int revents)
   }
 }
 
+bool
+wbf_write(struct ev_loop *loop, struct wbuf *wb, uint8_t *p, size_t len)
+{
+  bool need_start = cbf_is_empty(&wb->cbf);
+
+  if (cbf_save(&wb->cbf, p, len) != len)
+    return false;
+
+  wb->written += len;
+
+  if (need_start) {
+    ev_io_init(&wb->ev, wqueue_cb, wb->fd, EV_WRITE);
+    ev_io_start(loop, &wb->ev);
+  }
+  return true;
+}
+
 void
 capture_process(struct ev_loop *loop, struct devinfo *dev,
                 struct v4l2_buffer *cam_buf, uint8_t *p)
 {
-  bool need_start_fb = cbf_is_empty(&dev->wqueue_frame.cbf);
-  bool need_start_ib = cbf_is_empty(&dev->wqueue_index.cbf);
   frame_index_t fi = FI_INIT_VALUE;
 
-  fi.tv.sec_be64 = BSWAP_BE64((uint64_t)cam_buf->timestamp.tv_sec);
-  fi.tv.nsec_be16 = BSWAP_BE16((uint16_t)(cam_buf->timestamp.tv_usec / 1000));
+  timeval_to_timebin(&fi.tv, &cam_buf->timestamp);
   fi.offset_be64 = BSWAP_BE64(dev->wqueue_frame.written);
   fi.size_be32 = BSWAP_BE32(cam_buf->bytesused);
 
-  if (!cbf_save(&dev->wqueue_frame.cbf, p, cam_buf->bytesused)) {
+  if (!wbf_write(loop, &dev->wqueue_frame, p, cam_buf->bytesused)) {
     fprintf(stderr, "! buffer has no free space. Frame dropped\n");
     /* TODO: count dropped frames, reduce prints */
     return;
   }
 
-  if (!cbf_save(&dev->wqueue_index.cbf, (uint8_t*)&fi, sizeof(fi))) {
+  if (!wbf_write(loop, &dev->wqueue_index, (uint8_t*)&fi, sizeof(fi))) {
     fprintf(stderr, "! buffer has no free space. Frame dropped\n");
     /* TODO: count dropped frames, reduce prints */
     return;
   }
+}
 
-  dev->wqueue_frame.written += cam_buf->bytesused;
 
-  if (need_start_fb) {
-    ev_io_init(&dev->wqueue_frame.ev,
-               wqueue_cb, dev->wqueue_frame.fd, EV_WRITE);
-    ev_io_start(loop, &dev->wqueue_frame.ev);
-  }
+static bool
+make_frame_header(struct ev_loop *loop,
+                  struct devinfo *dev,
+                  struct timeval *ltime,
+                  struct timeval *gtime)
+{
+  struct frame_header fh = FH_INIT_VALUE;
 
-  if (need_start_ib) {
-    ev_io_init(&dev->wqueue_index.ev,
-               wqueue_cb, dev->wqueue_index.fd, EV_WRITE);
-    ev_io_start(loop, &dev->wqueue_index.ev);
-  }
+  fh.fps = (uint8_t)dev->cam_info.frame_per_second;
+  timeval_to_timebin(&fh.ltime, ltime);
+  timeval_to_timebin(&fh.gtime, gtime);
+  return wbf_write(loop, &dev->wqueue_index, (uint8_t*)&fh, sizeof(fh));
 }
 
 static void
@@ -480,12 +501,19 @@ camera_cb(struct ev_loop *loop, ev_io *w, int revents)
 
   if (!dev->c.frames_arrived) {
     struct timeval fftv = {0};
+    struct timeval gfftv = {0};
     get_precise_time(&dev->c.first_frame_time);
+    gettimeofday(&gfftv, NULL);
     timersub(&dev->c.first_frame_time, &dev->c.start_time, &fftv);
     /* update information about first frame */
     fprintf(stderr,
             "@ first frame arrived in: "TV_FMT" seconds\n",
             TV_ARGS(&fftv));
+
+    if (!make_frame_header(loop, dev, &fftv, &gfftv)) {
+      fprintf(stderr, "! Frame header not created\n");
+      ev_break(loop, EVBREAK_ALL);
+    }
   }
 
   dev->c.frames_arrived++;
