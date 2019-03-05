@@ -19,6 +19,7 @@
 
 #include <linux/videodev2.h>
 
+#include "frame_index.h"
 #include "circle_buffer.h"
 
 #define LOG_NOISY 0
@@ -38,18 +39,6 @@
 #else
 # define BUFFERS_SWAP_COUNT VIDEO_MAX_FRAME
 #endif
-
-#define FI_INIT_VALUE {.key = {'A', 'Z'}};
-
-struct __attribute__((packed)) frame_index {
-  char key[2];
-  struct {
-    uint64_t sec;
-    uint16_t nsec;
-  } tv;
-  uint64_t offset;
-  uint32_t size;
-};
 
 struct wbuf {
   ev_io ev;
@@ -425,16 +414,12 @@ capture_process(struct ev_loop *loop, struct devinfo *dev,
 {
   bool need_start_fb = cbf_is_empty(&dev->wqueue_frame.cbf);
   bool need_start_ib = cbf_is_empty(&dev->wqueue_index.cbf);
-  struct frame_index fi = FI_INIT_VALUE;
+  frame_index_t fi = FI_INIT_VALUE;
 
-  fi.tv.sec = (uint64_t)cam_buf->timestamp.tv_sec;
-  fi.tv.nsec = (uint16_t)(cam_buf->timestamp.tv_usec / 1000);
-  fi.offset = dev->wqueue_frame.written;
-  fi.size = cam_buf->bytesused;
-
-  if (need_start_ib) {
-    printf("ib check = %zu\n", dev->wqueue_index.cbf.free_space);
-  }
+  fi.tv.sec_be64 = BSWAP_BE64((uint64_t)cam_buf->timestamp.tv_sec);
+  fi.tv.nsec_be16 = BSWAP_BE16((uint16_t)(cam_buf->timestamp.tv_usec / 1000));
+  fi.offset_be64 = BSWAP_BE64(dev->wqueue_frame.written);
+  fi.size_be32 = BSWAP_BE32(cam_buf->bytesused);
 
   if (!cbf_save(&dev->wqueue_frame.cbf, p, cam_buf->bytesused)) {
     fprintf(stderr, "! buffer has no free space. Frame dropped\n");
