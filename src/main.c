@@ -203,6 +203,7 @@ init_device_wqueue_alloc(struct devinfo *dev,
 bool
 init_device_options(struct devinfo *dev)
 {
+  struct v4l2_control cntr = {0};
   struct v4l2_streamparm parm = {0};
   size_t fps = 0u;
   parm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -228,6 +229,15 @@ init_device_options(struct devinfo *dev)
                  parm.parm.capture.timeperframe.numerator);
 
   fprintf(stderr, "@ frame per seconds: %zu\n", fps);
+
+  cntr.id = V4L2_CID_EXPOSURE_AUTO_PRIORITY;
+  cntr.value = 0;
+  if (!xioctl(dev->fd, VIDIOC_S_CTRL, &cntr)) {
+    fprintf(stderr, "! Exposure auto priority not disabled\n");
+  } else {
+    fprintf(stderr, "@ Exposure auto priority disabled\n");
+  }
+
   return true;
 }
 
