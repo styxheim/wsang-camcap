@@ -22,6 +22,8 @@
 #include "circle_buffer.h"
 
 #define LOG_NOISY 0
+#define FRAMES_DB "frames.mjpeg"
+#define INDEX_DB "frames_idx.db"
 
 #ifndef MAX
 # define MAX(a,b) (((a)>(b))?(a):(b))
@@ -74,8 +76,6 @@ struct bufinfo {
   void *p;
   /* size of allocated frame */
   size_t size;
-  /* size of captured frame */
-  size_t filled;
 };
 
 struct devinfo {
@@ -85,6 +85,9 @@ struct devinfo {
  
   /* preseted values */
   char path[256];
+
+  size_t disk_frame_buffer_size;
+  size_t disk_index_buffer_size;
 
   /* size of uncompressed frame */
   size_t frame_size;
@@ -188,11 +191,25 @@ init_device_rqueue_alloc(struct devinfo *dev)
 }
 
 static bool
-init_device_wqueue_alloc(struct devinfo *dev)
+init_device_wqueue_alloc(struct devinfo *dev,
+                         struct wbuf *wbuf, char *path, size_t size)
 {
-  /* TODO: allocate buffers */
-  fprintf(stderr, "! frame saving not supported\n");
-  return false;
+  if (!cbf_init(&wbuf->cbf, size)) {
+    fprintf(stderr, "! cannot alloc %zu bytes for '%s': %s\n",
+            size, path, strerror(errno));
+    return false;
+  }
+
+  wbuf->fd = open(path,
+                  O_CREAT | O_WRONLY | O_NONBLOCK | O_TRUNC,
+                  S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP);
+
+  if (wbuf->fd == -1) {
+    fprintf(stderr, "! open db %s failed: %s\n", path, strerror(errno));
+    return false;
+  }
+
+  return true;
 }
 
 /*
@@ -249,6 +266,8 @@ init_device(struct devinfo *dev)
   dev->frame_width = 640;
   dev->frame_height = 480;
 #endif
+  dev->disk_frame_buffer_size = 90000000; /* 90 MiB */
+  dev->disk_index_buffer_size = 1048576; /* 1MB */
   
   fprintf(stderr, "* open cam: %s\n", dev->path);
   dev->fd = open(dev->path, O_RDWR | O_NONBLOCK, 0);
@@ -311,7 +330,12 @@ init_device(struct devinfo *dev)
   if (!init_device_rqueue_alloc(dev))
     return false;
 
-  if (!init_device_wqueue_alloc(dev))
+  if (!init_device_wqueue_alloc(dev, &dev->wqueue_frame,
+                                FRAMES_DB, dev->disk_frame_buffer_size))
+    return false;
+
+  if (!init_device_wqueue_alloc(dev, &dev->wqueue_index,
+                                INDEX_DB, dev->disk_index_buffer_size))
     return false;
 
   return true;
@@ -372,10 +396,52 @@ capture(struct devinfo *dev)
   return true;
 }
 
-void
-capture_process(struct ev_loop *loop, struct devinfo *dev, struct bufinfo *buf)
+/* write cb for buffer */
+static void
+wqueue_frames_cb(struct ev_loop *loop, ev_io *w, int revents)
 {
-  /* TODO: write frame to circle buffer */
+  struct wbuf *wb = (struct wbuf*)w;
+  uint8_t p[WQUEUE_WRITE_BLOCK_SZ] = {0};
+  size_t len = WQUEUE_WRITE_BLOCK_SZ;
+  ssize_t wlen = 0;
+
+  len = cbf_get(&wb->cbf, p, len);
+  if (!len) {
+    /* stop event when buffer is empty */
+    ev_io_stop(loop, w);
+    return;
+  }
+
+  wlen = write(wb->fd, p, len);
+  if (wlen <= 0) {
+    fprintf(stderr,
+            "! error write %zu bytes to fd %d: %s\n",
+            len, wb->fd, strerror(errno));
+    return;
+  }
+
+  cbf_discard(&wb->cbf, wlen);
+  /* TODO: write index */
+}
+
+void
+capture_process(struct ev_loop *loop, struct devinfo *dev,
+                struct v4l2_buffer *cam_buf, uint8_t *p)
+{
+  bool need_started = cbf_is_empty(&dev->wqueue_frame.cbf);
+
+  if (!cbf_save(&dev->wqueue_frame.cbf, p, cam_buf->bytesused)) {
+    fprintf(stderr, "! buffer has no free space. Frame dropped\n");
+    exit(1);
+    return;
+  }
+
+  /* TODO: need_started */
+  if (need_started) {
+    ev_io_init(&dev->wqueue_frame.ev,
+               wqueue_frames_cb, dev->wqueue_frame.fd, EV_WRITE);
+    ev_io_start(loop, &dev->wqueue_frame.ev);
+  }
 }
 
 static void
@@ -414,7 +480,6 @@ camera_cb(struct ev_loop *loop, ev_io *w, int revents)
     fprintf(stderr, "! ioctl(VIDIOC_DQBUF) failed: %s\n", strerror(errno));
   } else {
     dev->queued--;
-    dev->queue[buf.index].filled = buf.bytesused;
 #if LOG_NOISY
     timespecsub(&buf.timestamp, &tv, &tvr);
     timespecsub(&host_tv_cur, &host_tv, &host_tvr);
@@ -437,7 +502,7 @@ camera_cb(struct ev_loop *loop, ev_io *w, int revents)
 #endif
   }
 
-  capture_process(loop, dev, &dev->queue[buf.index]);
+  capture_process(loop, dev, &buf, dev->queue[buf.index].p);
 
   if (!xioctl(dev->fd, VIDIOC_QBUF, &buf)) {
     fprintf(stderr, "! error while queue buffer %"PRIu32": %s\n",
