@@ -5,6 +5,9 @@ CFLAGS+=-g -Wall -Werror -pedantic
 
 all: capture dump
 
+clean:
+	rm -f capture dump
+
 capture: src/main.c src/circle_buffer.c
 	${CC} -o $@ ${CFLAGS} $^ ${LIBS}
 
