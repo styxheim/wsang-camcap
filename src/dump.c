@@ -17,7 +17,7 @@
  * return false when *fh is invalid
  */
 bool
-dump_fh(frame_header_t *fh)
+dump_fh(frame_header_t *fh, size_t file_size)
 {
   struct timeval tv_diff = {0};
   struct timeval ltime;
@@ -36,7 +36,11 @@ dump_fh(frame_header_t *fh)
     symbol = '+';
   }
 
-  printf("# HEADER < fps = %u, fft = "TV_FMT", local time = "TV_FMT", UTC diff = %c"TV_FMT" >\n",
+  printf("# HEADER < "
+         "frames = %zu, fps = %u, fft = "TV_FMT", "
+         "local time = "TV_FMT", UTC diff = %c"TV_FMT" "
+         ">\n",
+         (file_size - sizeof(frame_header_t)) / sizeof(frame_index_t),
          fh->fps,
          TV_ARGS(&fft),
          TV_ARGS(&ltime),
@@ -75,7 +79,7 @@ dump_fi(frame_index_t *pfi, frame_index_t *fi)
   uint64_t frame_seq = BSWAP_BE64(fi->seq_be64);
 
   if (!FI_KEY_VALID(fi)) {
-    printf("[%6llu] invalid magic key\n", seq);
+    printf("[%6llu] invalid magic key: %x\n", seq, BSWAP_BE16(*((uint16_t*)fi->key)));
     errors++;
   }
 
@@ -123,6 +127,7 @@ main(int argc, char *argv[])
 {
   int fd;
   int r;
+  size_t file_size = 0u;
   frame_header_t fh = FH_INIT_VALUE;
   frame_index_t fi = FI_INIT_VALUE;
   frame_index_t pfi = FI_INIT_VALUE;
@@ -138,6 +143,9 @@ main(int argc, char *argv[])
     return EXIT_FAILURE;
   }
 
+  file_size = lseek(fd, 0u, SEEK_END);
+  lseek(fd, 0u, SEEK_SET);
+
   /* read header */
   r = read(fd, &fh, sizeof(fh));
   if (r != sizeof(fh)) {
@@ -147,7 +155,7 @@ main(int argc, char *argv[])
     return EXIT_FAILURE;
   }
 
-  if (!dump_fh(&fh)) {
+  if (!dump_fh(&fh, file_size)) {
     printf("# header: invalid data\n");
     return EXIT_FAILURE;
   }
