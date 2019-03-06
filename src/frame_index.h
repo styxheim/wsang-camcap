@@ -42,7 +42,11 @@ typedef struct __attribute__((packed)) frame_index {
 /* file header */
 typedef struct __attribute__((packed)) frame_header {
   char key[4];
+  /* sequence */
+  uint32_t seq_be32;
+  /* path to frames file */
   uint8_t path[FH_PATH_SIZE];
+  /* frames per seconds */
   uint8_t fps;
   /* frame start time, result from clock_gettime() */
   struct timebin ltime;

@@ -249,8 +249,8 @@ init_device(struct ev_loop *loop, struct devinfo *dev)
   dev->frame_width = 640;
   dev->frame_height = 480;
 #endif
-  dev->trg.size_limit = 1024 * 1024 * 1024; /* limit to 1G */
-  dev->trg.files_limit = 4; /* 4GB cycle */
+  dev->trg.size_limit = 1024 * 1024 * 128; /* limit to 128M */
+  dev->trg.files_limit = 32; /* 4GB cycle */
   
   fprintf(stderr, "* open cam: %s\n", dev->path);
   dev->fd = open(dev->path, O_RDWR | O_NONBLOCK, 0);
@@ -393,6 +393,7 @@ make_frame_header(struct devinfo *dev)
 {
   struct frame_header fh = FH_INIT_VALUE;
 
+  fh.seq_be32 = BSWAP_BE32(dev->trg.file_idx);
   fh.fps = (uint8_t)dev->cam_info.frame_per_second;
   timebin_from_timeval(&fh.ltime, &dev->c.first_frame_time);
   timebin_from_timeval(&fh.gtime, &dev->c.first_frame_time_utc);
@@ -415,7 +416,10 @@ wbf_make_filename(struct devinfo *dev, struct wbf *wb, uint32_t file_no)
 static bool
 wbf_make_file(struct devinfo *dev, struct wbf *wb)
 {
-  wbf_make_filename(dev, wb, dev->trg.file_idx);
+  if (dev->trg.files_limit)
+    wbf_make_filename(dev, wb, dev->trg.file_idx % dev->trg.files_limit);
+  else
+    wbf_make_filename(dev, wb, dev->trg.file_idx);
 
   if (wb->fd > 0)
     close(wb->fd);
@@ -448,10 +452,7 @@ wbf_make_increment(struct devinfo *dev)
     return false;
   }
 
-  if (dev->trg.files_limit)
-    dev->trg.file_idx = ((dev->trg.file_idx + 1) % dev->trg.files_limit);
-  else
-    dev->trg.file_idx++;
+  dev->trg.file_idx++;
   return true;
 }
 
@@ -461,8 +462,9 @@ capture_process(struct devinfo *dev,
 {
   frame_index_t fi = FI_INIT_VALUE;
 
-  if (dev->trg.frame.written + cam_buf->bytesused > dev->trg.size_limit ||
-      dev->trg.frame.fd <= 0 || dev->trg.index.fd <= 0) {
+  if ((dev->trg.index.written + sizeof(frame_index_t) +
+       dev->trg.frame.written + cam_buf->bytesused > dev->trg.size_limit) ||
+      (dev->trg.frame.fd <= 0 || dev->trg.index.fd <= 0)) {
     if (!wbf_make_increment(dev)) {
       fprintf(stderr, "! error while create new files\n");
       ev_break(dev->loop, EVBREAK_ALL);
