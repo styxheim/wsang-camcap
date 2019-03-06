@@ -431,7 +431,8 @@ wbf_make_file(struct devinfo *dev, struct wbf *wb)
     fprintf(stderr, "! file '%s' not openned for writing.\n", wb->path);
     return false;
   } else {
-    fprintf(stderr, "@ open file '%s' writing.\n", wb->path);
+    fprintf(stderr, "@ open file '%s' writing. sequence = %"PRIu32".\n",
+            wb->path, dev->trg.file_idx);
     wb->written = 0u;
   }
   return true;
