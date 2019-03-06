@@ -89,7 +89,7 @@ dump_fi(frame_index_t *pfi, frame_index_t *fi)
   }
 
   if (poffset + psize > offset) {
-    printf("[%6llu] offset value invalid: previous frame end > offset: %"PRIu64" > %"PRIu64,
+    printf("[%6llu] offset value invalid: previous frame end > offset: %"PRIu64" > %"PRIu64"\n",
            seq, poffset + psize, offset);
     errors++;
   }
