@@ -44,7 +44,6 @@
 struct wbf {
   int fd; /* -1 and 0 is invalid fd */
   char path[FH_PATH_SIZE + 1];
-  uint32_t index;
   uint64_t written;
 };
 
@@ -79,7 +78,10 @@ struct devinfo {
 
   /* output queue: frames and indexes */
   struct {
+    /* if limit reached, wbf.index got zero */
+    size_t files_limit;
     size_t size_limit;
+    uint32_t file_idx;
     struct wbf frame;
     struct wbf index;
   } trg;
@@ -248,6 +250,7 @@ init_device(struct ev_loop *loop, struct devinfo *dev)
   dev->frame_height = 480;
 #endif
   dev->trg.size_limit = 1024 * 1024 * 1024; /* limit to 1G */
+  dev->trg.files_limit = 4; /* 4GB cycle */
   
   fprintf(stderr, "* open cam: %s\n", dev->path);
   dev->fd = open(dev->path, O_RDWR | O_NONBLOCK, 0);
@@ -368,93 +371,22 @@ capture(struct devinfo *dev)
   return true;
 }
 
-static void
-wbf_make_name(struct devinfo *dev, struct wbf *wb)
-{
-  if (wb == &dev->trg.index) {
-    snprintf(wb->path, sizeof(wb->path), "idx_%010"PRIu32, wb->index++);
-  } else if (wb == &dev->trg.frame) {
-    snprintf(wb->path, sizeof(wb->path), "frm_%010"PRIu32, wb->index++);
-  } else {
-    snprintf(wb->path, sizeof(wb->path), "wtf_%010"PRIu32, wb->index++);
-  }
-}
-
 static bool
 wbf_write(struct devinfo *dev, struct wbf *wb, uint8_t *p, size_t len)
 {
-  bool silent = false;
   ssize_t r;
-
-  if (wb->fd <= 0) {
-    if (wb->fd == 0) {
-      wbf_make_name(dev, wb);
-    } else {
-      silent = true;
-    }
-    wb->fd = open(wb->path, O_CREAT | O_TRUNC | O_WRONLY,
-                  S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP);
-    if (wb->fd == -1) {
-      if (!silent)
-        fprintf(stderr, "! file '%s' not openned for writing.\n", wb->path);
-      return false;
-    } else {
-      fprintf(stderr, "@ open file '%s' writing.\n", wb->path);
-      wb->written = 0u;
-    }
-  }
-
-  if (wb->written + len > dev->trg.size_limit) {
-    fprintf(stderr, "! write %zu bytes to '%s' not allowed by limit. "
-            "Open next file\n",
-            len,
-            wb->path);
-    close(wb->fd);
-    wb->fd = 0;
-    return wbf_write(dev, wb, p, len);
-  }
 
   r = write(wb->fd, p, len);
   if (r != len) {
     fprintf(stderr, "! write to '%s' incomplete: %zd != %zu. "
             "Trying write to next file\n",
-            wb->path,
-            r, len);
-    wb->fd = 0;
-    /* try next file */
-    return wbf_write(dev, wb, p, len);
+            wb->path, r, len);
+    return false;
   }
 
   wb->written += len;
-
   return true;
 }
-
-static void
-capture_process(struct devinfo *dev,
-                struct v4l2_buffer *cam_buf, uint8_t *p)
-{
-  frame_index_t fi = FI_INIT_VALUE;
-
-  if (!wbf_write(dev, &dev->trg.frame, p, cam_buf->bytesused)) {
-    fprintf(stderr, "! frame %zu not written\n", dev->c.frames_arrived);
-    /* TODO: count dropped frames, reduce prints */
-    return;
-  }
-
-  timebin_from_timeval(&fi.tv, &cam_buf->timestamp);
-  fi.offset_be64 = BSWAP_BE64(dev->trg.frame.written - cam_buf->bytesused);
-  fi.size_be32 = BSWAP_BE32(cam_buf->bytesused);
-  fi.seq_be64 = BSWAP_BE64((uint64_t)dev->c.frames_arrived);
-  memcpy(fi.path, dev->trg.frame.path, sizeof(fi.path));
-
-  if (!wbf_write(dev, &dev->trg.index, (uint8_t*)&fi, sizeof(fi))) {
-    fprintf(stderr, "! write failed\n");
-    /* TODO: count dropped frames, reduce prints */
-    return;
-  }
-}
-
 
 static bool
 make_frame_header(struct devinfo *dev)
@@ -464,7 +396,97 @@ make_frame_header(struct devinfo *dev)
   fh.fps = (uint8_t)dev->cam_info.frame_per_second;
   timebin_from_timeval(&fh.ltime, &dev->c.first_frame_time);
   timebin_from_timeval(&fh.gtime, &dev->c.first_frame_time_utc);
+  memcpy(fh.path, dev->trg.frame.path, sizeof(fh.path));
   return wbf_write(dev, &dev->trg.index, (uint8_t*)&fh, sizeof(fh));
+}
+
+static void
+wbf_make_filename(struct devinfo *dev, struct wbf *wb, uint32_t file_no)
+{
+  if (wb == &dev->trg.index) {
+    snprintf(wb->path, sizeof(wb->path), "idx_%010"PRIu32, file_no);
+  } else if (wb == &dev->trg.frame) {
+    snprintf(wb->path, sizeof(wb->path), "frm_%010"PRIu32, file_no);
+  } else {
+    snprintf(wb->path, sizeof(wb->path), "wtf_%010"PRIu32, file_no);
+  }
+}
+
+static bool
+wbf_make_file(struct devinfo *dev, struct wbf *wb)
+{
+  wbf_make_filename(dev, wb, dev->trg.file_idx);
+
+  if (wb->fd > 0)
+    close(wb->fd);
+
+  wb->fd = open(wb->path, O_CREAT | O_TRUNC | O_WRONLY,
+                  S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP);
+
+  if (wb->fd == -1) {
+    fprintf(stderr, "! file '%s' not openned for writing.\n", wb->path);
+    return false;
+  } else {
+    fprintf(stderr, "@ open file '%s' writing.\n", wb->path);
+    wb->written = 0u;
+  }
+  return true;
+}
+
+/* generate index and frames files */
+static bool
+wbf_make_increment(struct devinfo *dev)
+{
+  if (!wbf_make_file(dev, &dev->trg.frame))
+    return false;
+
+  if (!wbf_make_file(dev, &dev->trg.index))
+    return false;
+
+  if (!make_frame_header(dev)) {
+    fprintf(stderr, "! Frame header not writted: %s", strerror(errno));
+    return false;
+  }
+
+  if (dev->trg.files_limit)
+    dev->trg.file_idx = ((dev->trg.file_idx + 1) % dev->trg.files_limit);
+  else
+    dev->trg.file_idx++;
+  return true;
+}
+
+static void
+capture_process(struct devinfo *dev,
+                struct v4l2_buffer *cam_buf, uint8_t *p)
+{
+  frame_index_t fi = FI_INIT_VALUE;
+
+  if (dev->trg.frame.written + cam_buf->bytesused > dev->trg.size_limit ||
+      dev->trg.frame.fd <= 0 || dev->trg.index.fd <= 0) {
+    if (!wbf_make_increment(dev)) {
+      fprintf(stderr, "! error while create new files\n");
+      ev_break(dev->loop, EVBREAK_ALL);
+      return;
+    }
+  }
+
+  if (!wbf_write(dev, &dev->trg.frame, p, cam_buf->bytesused)) {
+    fprintf(stderr, "! frame %zu not written\n", dev->c.frames_arrived);
+    ev_break(dev->loop, EVBREAK_ALL);
+    return;
+  }
+
+  timebin_from_timeval(&fi.tv, &cam_buf->timestamp);
+  fi.offset_be64 = BSWAP_BE64(dev->trg.frame.written - cam_buf->bytesused);
+  fi.size_be32 = BSWAP_BE32(cam_buf->bytesused);
+  fi.seq_be64 = BSWAP_BE64((uint64_t)dev->c.frames_arrived);
+
+  if (!wbf_write(dev, &dev->trg.index, (uint8_t*)&fi, sizeof(fi))) {
+    fprintf(stderr, "! write index for frame  %zu failed\n",
+            dev->c.frames_arrived);
+    ev_break(dev->loop, EVBREAK_ALL);
+    return;
+  }
 }
 
 static void
@@ -497,11 +519,6 @@ camera_cb(struct ev_loop *loop, ev_io *w, int revents)
     fprintf(stderr,
             "@ first frame arrived in: "TV_FMT" seconds\n",
             TV_ARGS(&fftv));
-
-    if (!make_frame_header(dev)) {
-      fprintf(stderr, "! Frame header not created\n");
-      ev_break(loop, EVBREAK_ALL);
-    }
   }
 
   dev->c.frames_arrived++;

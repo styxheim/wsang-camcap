@@ -34,7 +34,6 @@ typedef struct __attribute__((packed)) frame_index {
   uint64_t offset_be64;
   uint32_t size_be32;
   uint64_t seq_be64;
-  uint8_t path[FH_PATH_SIZE];
 } frame_index_t;
 
 #define FH_INIT_VALUE {.key = {'S', 'W', 'I', 'C'}}
@@ -43,6 +42,7 @@ typedef struct __attribute__((packed)) frame_index {
 /* file header */
 typedef struct __attribute__((packed)) frame_header {
   char key[4];
+  uint8_t path[FH_PATH_SIZE];
   uint8_t fps;
   /* frame start time, result from clock_gettime() */
   struct timebin ltime;
