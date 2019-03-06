@@ -443,7 +443,7 @@ capture_process(struct devinfo *dev,
   }
 
   timebin_from_timeval(&fi.tv, &cam_buf->timestamp);
-  fi.offset_be64 = BSWAP_BE64(dev->trg.frame.written);
+  fi.offset_be64 = BSWAP_BE64(dev->trg.frame.written - cam_buf->bytesused);
   fi.size_be32 = BSWAP_BE32(cam_buf->bytesused);
   fi.seq_be64 = BSWAP_BE64((uint64_t)dev->c.frames_arrived);
   memcpy(fi.path, dev->trg.frame.path, sizeof(fi.path));
