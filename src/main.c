@@ -97,6 +97,7 @@ struct devinfo {
     /* time of receive first frame after STREAMON */
     struct timeval first_frame_time;
     struct timeval first_frame_time_utc;
+    struct timeval last_frame_time;
     size_t frames_arrived;
   } c;
 } devinfo;
@@ -395,8 +396,9 @@ make_frame_header(struct devinfo *dev)
 
   fh.seq_be32 = BSWAP_BE32(dev->trg.file_idx);
   fh.fps = (uint8_t)dev->cam_info.frame_per_second;
-  timebin_from_timeval(&fh.ltime, &dev->c.first_frame_time);
-  timebin_from_timeval(&fh.gtime, &dev->c.first_frame_time_utc);
+  timebin_from_timeval(&fh.cap_time.local, &dev->c.first_frame_time);
+  timebin_from_timeval(&fh.cap_time.utc, &dev->c.first_frame_time_utc);
+  timebin_from_timeval(&fh.first_frame_time, &dev->c.last_frame_time);
   memcpy(fh.path, dev->trg.frame.path, sizeof(fh.path));
   return wbf_write(dev, &dev->trg.index, (uint8_t*)&fh, sizeof(fh));
 }
@@ -518,6 +520,8 @@ camera_cb(struct ev_loop *loop, ev_io *w, int revents)
     get_precise_time(&dev->c.first_frame_time);
     gettimeofday(&dev->c.first_frame_time_utc, NULL);
     timersub(&dev->c.first_frame_time, &dev->c.start_time, &fftv);
+    memcpy(&dev->c.last_frame_time,
+           &dev->c.first_frame_time, sizeof(struct timeval));
     /* update information about first frame */
     fprintf(stderr,
             "@ first frame arrived in: "TV_FMT" seconds\n",

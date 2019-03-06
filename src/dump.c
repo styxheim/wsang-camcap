@@ -22,9 +22,11 @@ dump_fh(frame_header_t *fh)
   struct timeval tv_diff = {0};
   struct timeval ltime;
   struct timeval gtime;
+  struct timeval fft;
   char symbol = '+';
-  timebin_to_timeval(&fh->ltime, &ltime);
-  timebin_to_timeval(&fh->gtime, &gtime);
+  timebin_to_timeval(&fh->cap_time.local, &ltime);
+  timebin_to_timeval(&fh->cap_time.utc, &gtime);
+  timebin_to_timeval(&fh->first_frame_time, &fft);
 
   if (timercmp(&ltime, &gtime, >)) {
     timersub(&ltime, &gtime, &tv_diff);
@@ -34,8 +36,9 @@ dump_fh(frame_header_t *fh)
     symbol = '+';
   }
 
-  printf("# HEADER < fps = %u, local time = "TV_FMT", UTC diff = %c"TV_FMT" >\n",
+  printf("# HEADER < fps = %u, fft = "TV_FMT", local time = "TV_FMT", UTC diff = %c"TV_FMT" >\n",
          fh->fps,
+         TV_ARGS(&fft),
          TV_ARGS(&ltime),
          symbol,
          TV_ARGS(&tv_diff));

@@ -48,10 +48,14 @@ typedef struct __attribute__((packed)) frame_header {
   uint8_t path[FH_PATH_SIZE];
   /* frames per seconds */
   uint8_t fps;
-  /* frame start time, result from clock_gettime() */
-  struct timebin ltime;
-  /* frame start time, result from gettimeofday() */
-  struct timebin gtime;
+  struct {
+    /* frame start time, result from clock_gettime() */
+    struct timebin local;
+    /* frame start time, result from gettimeofday() */
+    struct timebin utc;
+  } cap_time;
+  /* time of first frame in pack */
+  struct timebin first_frame_time;
 } frame_header_t;
 
 static inline void
