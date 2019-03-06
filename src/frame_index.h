@@ -26,6 +26,7 @@ struct __attribute__((packed)) timebin {
   uint32_t usec_be32;
 };
 
+#define FH_PATH_SIZE 16
 /* index record for each frame */
 typedef struct __attribute__((packed)) frame_index {
   char key[2];
@@ -33,6 +34,7 @@ typedef struct __attribute__((packed)) frame_index {
   uint64_t offset_be64;
   uint32_t size_be32;
   uint64_t seq_be64;
+  uint8_t path[FH_PATH_SIZE];
 } frame_index_t;
 
 #define FH_INIT_VALUE {.key = {'S', 'W', 'I', 'C'}}

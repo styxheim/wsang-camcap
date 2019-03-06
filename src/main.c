@@ -40,30 +40,30 @@
 # define BUFFERS_SWAP_COUNT VIDEO_MAX_FRAME
 #endif
 
-struct wbuf {
-  ev_io ev;
-  int fd;
-
-  struct circle_buffer cbf;
+/* write target */
+struct wbf {
+  int fd; /* -1 and 0 is invalid fd */
+  char path[FH_PATH_SIZE + 1];
+  uint32_t index;
   uint64_t written;
 };
 
+/* v4l buffer pointer */
 struct bufinfo {
   void *p;
   /* size of allocated frame */
   size_t size;
 };
 
+/* device info */
 struct devinfo {
   /* system values */
   ev_io ev;
   int fd;
- 
+
+  struct ev_loop *loop;
   /* preseted values */
   char path[256];
-
-  size_t disk_frame_buffer_size;
-  size_t disk_index_buffer_size;
 
   /* size of uncompressed frame */
   size_t frame_size;
@@ -78,8 +78,11 @@ struct devinfo {
   size_t queued; /* count of queued buffers */
 
   /* output queue: frames and indexes */
-  struct wbuf wqueue_frame;
-  struct wbuf wqueue_index;
+  struct {
+    size_t size_limit;
+    struct wbf frame;
+    struct wbf index;
+  } trg;
 
   struct {
     unsigned frame_per_second;
@@ -177,28 +180,6 @@ init_device_rqueue_alloc(struct devinfo *dev)
   return true;
 }
 
-static bool
-init_device_wqueue_alloc(struct devinfo *dev,
-                         struct wbuf *wbuf, char *path, size_t size)
-{
-  if (!cbf_init(&wbuf->cbf, size)) {
-    fprintf(stderr, "! cannot alloc %zu bytes for '%s': %s\n",
-            size, path, strerror(errno));
-    return false;
-  }
-
-  wbuf->fd = open(path,
-                  O_CREAT | O_WRONLY | O_NONBLOCK | O_TRUNC,
-                  S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP);
-
-  if (wbuf->fd == -1) {
-    fprintf(stderr, "! open db %s failed: %s\n", path, strerror(errno));
-    return false;
-  }
-
-  return true;
-}
-
 /*
  * Init some options after setup device: frame_per_second, etc
  */
@@ -246,7 +227,7 @@ init_device_options(struct devinfo *dev)
 }
 
 bool
-init_device(struct devinfo *dev)
+init_device(struct ev_loop *loop, struct devinfo *dev)
 {
   struct v4l2_capability cap = {0};
   /* wtf?
@@ -256,6 +237,7 @@ init_device(struct devinfo *dev)
   struct v4l2_format fmt = {0};
 
   memcpy(dev->path, "/dev/video0", 12);
+  dev->loop = loop;
 
   /* FIXME: preset configuration for camera */
 #if 1
@@ -265,8 +247,7 @@ init_device(struct devinfo *dev)
   dev->frame_width = 640;
   dev->frame_height = 480;
 #endif
-  dev->disk_frame_buffer_size = 60000000; /* 60 MiB */
-  dev->disk_index_buffer_size = 1048576; /* 1MB */
+  dev->trg.size_limit = 1024 * 1024 * 1024; /* limit to 1G */
   
   fprintf(stderr, "* open cam: %s\n", dev->path);
   dev->fd = open(dev->path, O_RDWR | O_NONBLOCK, 0);
@@ -329,14 +310,6 @@ init_device(struct devinfo *dev)
   if (!init_device_rqueue_alloc(dev))
     return false;
 
-  if (!init_device_wqueue_alloc(dev, &dev->wqueue_frame,
-                                FRAMES_DB, dev->disk_frame_buffer_size))
-    return false;
-
-  if (!init_device_wqueue_alloc(dev, &dev->wqueue_index,
-                                INDEX_DB, dev->disk_index_buffer_size))
-    return false;
-
   return true;
 }
 
@@ -395,69 +368,88 @@ capture(struct devinfo *dev)
   return true;
 }
 
-/* write cb for buffer */
 static void
-wqueue_cb(struct ev_loop *loop, ev_io *w, int revents)
+wbf_make_name(struct devinfo *dev, struct wbf *wb)
 {
-  struct wbuf *wb = (struct wbuf*)w;
-  uint8_t p[WQUEUE_WRITE_BLOCK_SZ] = {0};
-  size_t len = WQUEUE_WRITE_BLOCK_SZ;
-  ssize_t wlen = 0;
-
-  len = cbf_get(&wb->cbf, p, len);
-
-  wlen = write(wb->fd, p, len);
-  if (wlen <= 0) {
-    fprintf(stderr,
-            "! error write %zu bytes to fd %d: %s\n",
-            len, wb->fd, strerror(errno));
-    return;
-  }
-
-  cbf_discard(&wb->cbf, wlen);
-  if (cbf_is_empty(&wb->cbf)) {
-    /* stop event when buffer is empty */
-    ev_io_stop(loop, w);
-    return;
+  if (wb == &dev->trg.index) {
+    snprintf(wb->path, sizeof(wb->path), "idx_%010"PRIu32, wb->index++);
+  } else if (wb == &dev->trg.frame) {
+    snprintf(wb->path, sizeof(wb->path), "frm_%010"PRIu32, wb->index++);
+  } else {
+    snprintf(wb->path, sizeof(wb->path), "wtf_%010"PRIu32, wb->index++);
   }
 }
 
-bool
-wbf_write(struct ev_loop *loop, struct wbuf *wb, uint8_t *p, size_t len)
+static bool
+wbf_write(struct devinfo *dev, struct wbf *wb, uint8_t *p, size_t len)
 {
-  bool need_start = cbf_is_empty(&wb->cbf);
+  bool silent = false;
+  ssize_t r;
 
-  if (cbf_save(&wb->cbf, p, len) != len)
-    return false;
+  if (wb->fd <= 0) {
+    if (wb->fd == 0) {
+      wbf_make_name(dev, wb);
+    } else {
+      silent = true;
+    }
+    wb->fd = open(wb->path, O_CREAT | O_TRUNC | O_WRONLY,
+                  S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP);
+    if (wb->fd == -1) {
+      if (!silent)
+        fprintf(stderr, "! file '%s' not openned for writing.\n", wb->path);
+      return false;
+    } else {
+      fprintf(stderr, "@ open file '%s' writing.\n", wb->path);
+      wb->written = 0u;
+    }
+  }
+
+  if (wb->written + len > dev->trg.size_limit) {
+    fprintf(stderr, "! write %zu bytes to '%s' not allowed by limit. "
+            "Open next file\n",
+            len,
+            wb->path);
+    close(wb->fd);
+    wb->fd = 0;
+    return wbf_write(dev, wb, p, len);
+  }
+
+  r = write(wb->fd, p, len);
+  if (r != len) {
+    fprintf(stderr, "! write to '%s' incomplete: %zd != %zu. "
+            "Trying write to next file\n",
+            wb->path,
+            r, len);
+    wb->fd = 0;
+    /* try next file */
+    return wbf_write(dev, wb, p, len);
+  }
 
   wb->written += len;
 
-  if (need_start) {
-    ev_io_init(&wb->ev, wqueue_cb, wb->fd, EV_WRITE);
-    ev_io_start(loop, &wb->ev);
-  }
   return true;
 }
 
-void
-capture_process(struct ev_loop *loop, struct devinfo *dev,
+static void
+capture_process(struct devinfo *dev,
                 struct v4l2_buffer *cam_buf, uint8_t *p)
 {
   frame_index_t fi = FI_INIT_VALUE;
 
-  timebin_from_timeval(&fi.tv, &cam_buf->timestamp);
-  fi.offset_be64 = BSWAP_BE64(dev->wqueue_frame.written);
-  fi.size_be32 = BSWAP_BE32(cam_buf->bytesused);
-  fi.seq_be64 = BSWAP_BE64((uint64_t)dev->c.frames_arrived);
-
-  if (!wbf_write(loop, &dev->wqueue_frame, p, cam_buf->bytesused)) {
-    fprintf(stderr, "! buffer has no free space. Frame dropped\n");
+  if (!wbf_write(dev, &dev->trg.frame, p, cam_buf->bytesused)) {
+    fprintf(stderr, "! frame %zu not written\n", dev->c.frames_arrived);
     /* TODO: count dropped frames, reduce prints */
     return;
   }
 
-  if (!wbf_write(loop, &dev->wqueue_index, (uint8_t*)&fi, sizeof(fi))) {
-    fprintf(stderr, "! buffer has no free space. Frame dropped\n");
+  timebin_from_timeval(&fi.tv, &cam_buf->timestamp);
+  fi.offset_be64 = BSWAP_BE64(dev->trg.frame.written);
+  fi.size_be32 = BSWAP_BE32(cam_buf->bytesused);
+  fi.seq_be64 = BSWAP_BE64((uint64_t)dev->c.frames_arrived);
+  memcpy(fi.path, dev->trg.frame.path, sizeof(fi.path));
+
+  if (!wbf_write(dev, &dev->trg.index, (uint8_t*)&fi, sizeof(fi))) {
+    fprintf(stderr, "! write failed\n");
     /* TODO: count dropped frames, reduce prints */
     return;
   }
@@ -465,14 +457,14 @@ capture_process(struct ev_loop *loop, struct devinfo *dev,
 
 
 static bool
-make_frame_header(struct ev_loop *loop, struct devinfo *dev)
+make_frame_header(struct devinfo *dev)
 {
   struct frame_header fh = FH_INIT_VALUE;
 
   fh.fps = (uint8_t)dev->cam_info.frame_per_second;
   timebin_from_timeval(&fh.ltime, &dev->c.first_frame_time);
   timebin_from_timeval(&fh.gtime, &dev->c.first_frame_time_utc);
-  return wbf_write(loop, &dev->wqueue_index, (uint8_t*)&fh, sizeof(fh));
+  return wbf_write(dev, &dev->trg.index, (uint8_t*)&fh, sizeof(fh));
 }
 
 static void
@@ -506,7 +498,7 @@ camera_cb(struct ev_loop *loop, ev_io *w, int revents)
             "@ first frame arrived in: "TV_FMT" seconds\n",
             TV_ARGS(&fftv));
 
-    if (!make_frame_header(loop, dev)) {
+    if (!make_frame_header(dev)) {
       fprintf(stderr, "! Frame header not created\n");
       ev_break(loop, EVBREAK_ALL);
     }
@@ -540,7 +532,7 @@ camera_cb(struct ev_loop *loop, ev_io *w, int revents)
 #endif
   }
 
-  capture_process(loop, dev, &buf, dev->queue[buf.index].p);
+  capture_process(dev, &buf, dev->queue[buf.index].p);
 
   if (!xioctl(dev->fd, VIDIOC_QBUF, &buf)) {
     fprintf(stderr, "! error while queue buffer %"PRIu32": %s\n",
@@ -561,7 +553,7 @@ main(int argc, char *argv[])
 {
   struct ev_loop *loop = EV_DEFAULT;
   
-  if (!init_device(&devinfo))
+  if (!init_device(loop, &devinfo))
     return EXIT_FAILURE;
 
   ev_io_init(&devinfo.ev, camera_cb, devinfo.fd, EV_READ);
