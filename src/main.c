@@ -433,7 +433,7 @@ wbf_make_file(struct devinfo *dev, struct wbf *wb)
     fprintf(stderr, "! file '%s' not openned for writing.\n", wb->path);
     return false;
   } else {
-    fprintf(stderr, "@ open file '%s' writing. sequence = %"PRIu32".\n",
+    fprintf(stderr, "@ open file '%s' writing. sequence = %"PRIu32"\n",
             wb->path, dev->trg.file_idx);
     wb->written = 0u;
   }
@@ -503,6 +503,8 @@ camera_cb(struct ev_loop *loop, ev_io *w, int revents)
                            };
   struct devinfo *dev = (struct devinfo*)w;
 #if LOG_NOISY
+  static struct timeval first_frame_in_second = {0};
+  static size_t frame_counter = 0;
   struct timeval tvr = {0};
   struct timeval host_tv_cur = {0};
   struct timeval host_tvr = {0};
@@ -555,6 +557,16 @@ camera_cb(struct ev_loop *loop, ev_io *w, int revents)
             TV_ARGS(&host_tvr));
 #endif
   }
+
+#if LOG_NOISY
+  /* get fps */
+  timersub(&buf.timestamp, &first_frame_in_second, &tvr);
+  if (tvr.tv_sec >= 1) {
+    fprintf(stderr, "@ fps = %zu\n", dev->c.frames_arrived - frame_counter);
+    frame_counter = dev->c.frames_arrived;
+    memcpy(&first_frame_in_second, &buf.timestamp, sizeof(struct timeval));
+  }
+#endif
 
   capture_process(dev, &buf, dev->queue[buf.index].p);
 
