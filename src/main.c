@@ -14,6 +14,7 @@
 #include <strings.h>
 #include <sys/ioctl.h>
 #include <sys/time.h>
+#include <assert.h>
 
 #include <ev.h>
 
@@ -21,6 +22,7 @@
 
 #include "frame_index.h"
 #include "circle_buffer.h"
+#include "files.h"
 
 #define LOG_NOISY 0
 #define FRAMES_DB "frames.mjpeg"
@@ -413,11 +415,11 @@ static void
 wbf_make_filename(struct devinfo *dev, struct wbf *wb, uint32_t file_no)
 {
   if (wb == &dev->trg.index) {
-    snprintf(wb->path, sizeof(wb->path), "idx_%010"PRIu32, file_no);
+    make_idx_file(wb->path, file_no);
   } else if (wb == &dev->trg.frame) {
-    snprintf(wb->path, sizeof(wb->path), "frm_%010"PRIu32, file_no);
+    make_frm_file(wb->path, file_no);
   } else {
-    snprintf(wb->path, sizeof(wb->path), "wtf_%010"PRIu32, file_no);
+    assert(0);
   }
 }
 
