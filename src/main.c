@@ -94,9 +94,10 @@ struct devinfo {
   struct {
     /* time of send STREAMON */
     struct timeval start_time;
+    struct timeval start_time_utc;
     /* time of receive first frame after STREAMON */
-    struct timeval first_frame_time;
     struct timeval first_frame_time_utc;
+    struct timeval first_frame_time;
     struct timeval last_frame_time;
     size_t frames_arrived;
   } c;
@@ -359,6 +360,7 @@ capture(struct devinfo *dev)
   /* start capture */
   memset(&dev->c, 0, sizeof(dev->c));
   get_precise_time(&dev->c.start_time);
+  gettimeofday(&dev->c.start_time_utc, NULL);
 
   if (!xioctl(dev->fd, VIDIOC_STREAMON, &buf.type)) {
     perror("! ioctl(VIDIOC_STREAMON)");
@@ -393,12 +395,16 @@ static bool
 make_frame_header(struct devinfo *dev)
 {
   struct frame_header fh = FH_INIT_VALUE;
+  struct timeval tv_diff = {0};
+
+  timersub(&dev->c.last_frame_time, &dev->c.first_frame_time, &tv_diff);
 
   fh.seq_be32 = BSWAP_BE32(dev->trg.file_idx);
   fh.fps = (uint8_t)dev->cam_info.frame_per_second;
-  timebin_from_timeval(&fh.cap_time.local, &dev->c.first_frame_time);
+  /* mark current frame as first */
+  timebin_from_timeval(&fh.cap_time.local, &tv_diff);
+
   timebin_from_timeval(&fh.cap_time.utc, &dev->c.first_frame_time_utc);
-  timebin_from_timeval(&fh.first_frame_time, &dev->c.last_frame_time);
   memcpy(fh.path, dev->trg.frame.path, sizeof(fh.path));
   return wbf_write(dev, &dev->trg.index, (uint8_t*)&fh, sizeof(fh));
 }
@@ -464,6 +470,7 @@ capture_process(struct devinfo *dev,
                 struct v4l2_buffer *cam_buf, uint8_t *p)
 {
   frame_index_t fi = FI_INIT_VALUE;
+  struct timeval frame_time;
 
   if ((dev->trg.index.written + sizeof(frame_index_t) +
        dev->trg.frame.written + cam_buf->bytesused > dev->trg.size_limit) ||
@@ -481,7 +488,8 @@ capture_process(struct devinfo *dev,
     return;
   }
 
-  timebin_from_timeval(&fi.tv, &cam_buf->timestamp);
+  timersub(&cam_buf->timestamp, &dev->c.first_frame_time, &frame_time);
+  timebin_from_timeval(&fi.tv, &frame_time);
   fi.offset_be64 = BSWAP_BE64(dev->trg.frame.written - cam_buf->bytesused);
   fi.size_be32 = BSWAP_BE32(cam_buf->bytesused);
   fi.seq_be64 = BSWAP_BE64((uint64_t)dev->c.frames_arrived);
@@ -503,42 +511,66 @@ camera_cb(struct ev_loop *loop, ev_io *w, int revents)
                            };
   struct devinfo *dev = (struct devinfo*)w;
 #if LOG_NOISY
-  static struct timeval first_frame_in_second = {0};
   static size_t frame_counter = 0;
-  struct timeval tvr = {0};
   struct timeval host_tv_cur = {0};
   struct timeval host_tvr = {0};
-  static struct timeval tv = {0};
-  static struct timeval host_tv = {0};
 #endif
 
 #if LOG_NOISY
   get_precise_time(&host_tv_cur);
 #endif
 
-  if (!dev->c.frames_arrived) {
-    struct timeval fftv = {0};
-    /* get frame time */
-    get_precise_time(&dev->c.first_frame_time);
-    gettimeofday(&dev->c.first_frame_time_utc, NULL);
-    timersub(&dev->c.first_frame_time, &dev->c.start_time, &fftv);
-    memcpy(&dev->c.last_frame_time,
-           &dev->c.first_frame_time, sizeof(struct timeval));
-    /* update information about first frame */
-    fprintf(stderr,
-            "@ first frame arrived in: "TV_FMT" seconds\n",
-            TV_ARGS(&fftv));
-  }
-
-  dev->c.frames_arrived++;
-
   if (!xioctl(dev->fd, VIDIOC_DQBUF, &buf)) {
     fprintf(stderr, "! ioctl(VIDIOC_DQBUF) failed: %s\n", strerror(errno));
-  } else {
-    dev->queued--;
+    return;
+  }
+  dev->queued--;
+
 #if LOG_NOISY
+  /* get fps */
+  {
+    struct timeval _tlast = {0};
+    struct timeval _tcur = {0};
+    timersub(&dev->c.last_frame_time, &dev->c.first_frame_time, &_tlast);
+    timersub(&buf.timestamp, &dev->c.first_frame_time, &_tcur);
+    if (_tlast.tv_sec != _tcur.tv_sec) {
+      fprintf(stderr, "@ fps = %zu\n", dev->c.frames_arrived - frame_counter);
+      frame_counter = dev->c.frames_arrived;
+    }
+  }
+#endif
+
+  if (!dev->c.frames_arrived) {
+    /* first frame arrived */
+    struct timeval ttv = {0};
+    /* get frame time */
+    memcpy(&dev->c.first_frame_time, &buf.timestamp, sizeof(struct timeval));
+
+    /* make UTC first frame time */
+    timersub(&dev->c.first_frame_time, &dev->c.start_time, &ttv);
+    timeradd(&dev->c.start_time_utc, &ttv, &dev->c.first_frame_time_utc);
+
+    timersub(&dev->c.first_frame_time, &dev->c.start_time, &ttv);
+    /* update information about first frame */
+    fprintf(stderr,
+            "* first frame arrived in: "TV_FMT" seconds\n",
+            TV_ARGS(&ttv));
+    /* diff from kernel time */
+    timersub(&dev->c.first_frame_time, &buf.timestamp, &ttv);
+    fprintf(stderr, "* diff kernel time: "TV_FMT"\n", TV_ARGS(&ttv));
+  }
+  /* update time for each frame */
+  memcpy(&dev->c.last_frame_time, &buf.timestamp, sizeof(struct timeval));
+
+#if LOG_NOISY
+  {
+  struct timeval tvr = {0};
+    static struct timeval tv = {0};
+    static struct timeval host_tv = {0};
+    struct timeval cap_tv = {0};
     timersub(&buf.timestamp, &tv, &tvr);
     timersub(&host_tv_cur, &host_tv, &host_tvr);
+    timersub(&buf.timestamp, &dev->c.first_frame_time, &cap_tv);
     memcpy(&tv, &buf.timestamp, sizeof(tv));
     memcpy(&host_tv, &host_tv_cur, sizeof(host_tv));
     fprintf(stderr,
@@ -547,26 +579,20 @@ camera_cb(struct ev_loop *loop, ev_io *w, int revents)
             "flags=0x%08"PRIx32", "
             "sequence=%"PRIu32", "
             "queued=%zu, "
-            TV_FMT", from last: "TV_FMT", "
+            "frame time: "TV_FMT" ["TV_FMT"], "
+            "from last: "TV_FMT", "
             "host last: " TV_FMT
             "\n",
             buf.index, buf.bytesused, buf.flags, buf.sequence,
             dev->queued,
             TV_ARGS(&buf.timestamp),
+            TV_ARGS(&cap_tv),
             TV_ARGS(&tvr),
             TV_ARGS(&host_tvr));
-#endif
   }
+#endif
 
-#if LOG_NOISY
-  /* get fps */
-  timersub(&buf.timestamp, &first_frame_in_second, &tvr);
-  if (tvr.tv_sec >= 1) {
-    fprintf(stderr, "@ fps = %zu\n", dev->c.frames_arrived - frame_counter);
-    frame_counter = dev->c.frames_arrived;
-    memcpy(&first_frame_in_second, &buf.timestamp, sizeof(struct timeval));
-  }
-#endif
+  dev->c.frames_arrived++;
 
   capture_process(dev, &buf, dev->queue[buf.index].p);
 

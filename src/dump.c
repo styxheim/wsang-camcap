@@ -19,33 +19,20 @@
 bool
 dump_fh(frame_header_t *fh, size_t file_size)
 {
-  struct timeval tv_diff = {0};
   struct timeval ltime;
-  struct timeval gtime;
-  struct timeval fft;
-  char symbol = '+';
+  struct timeval utc;
   timebin_to_timeval(&fh->cap_time.local, &ltime);
-  timebin_to_timeval(&fh->cap_time.utc, &gtime);
-  timebin_to_timeval(&fh->first_frame_time, &fft);
-
-  if (timercmp(&ltime, &gtime, >)) {
-    timersub(&ltime, &gtime, &tv_diff);
-    symbol = '-';
-  } else if (timercmp(&ltime, &gtime, <)) {
-    timersub(&gtime, &ltime, &tv_diff);
-    symbol = '+';
-  }
+  timebin_to_timeval(&fh->cap_time.utc, &utc);
 
   printf("# HEADER < "
-         "frames = %zu, fps = %u, fft = "TV_FMT", "
-         "local time = "TV_FMT", UTC diff = %c"TV_FMT" "
+         "frames = %zu, fps = %u, "
+         "first frame time = "TV_FMT", "
+         "UTC start time = "TV_FMT" "
          ">\n",
          (file_size - sizeof(frame_header_t)) / sizeof(frame_index_t),
          fh->fps,
-         TV_ARGS(&fft),
          TV_ARGS(&ltime),
-         symbol,
-         TV_ARGS(&tv_diff));
+         TV_ARGS(&utc));
   return true;
 }
 
@@ -61,8 +48,6 @@ dump_fi(frame_index_t *pfi, frame_index_t *fi)
   static unsigned fps = 0u;
   int errors = 0;
 
-  const struct timeval one_second = {.tv_sec = 1};
-  struct timeval second;
   struct timeval tv_diff = {0};
   struct timeval ctime;
   struct timeval ptime;
@@ -89,7 +74,7 @@ dump_fi(frame_index_t *pfi, frame_index_t *fi)
     errors++;
   }
 
-  if (!timercmp(&ptime, &ctime, <)) {
+  if (timercmp(&ptime, &ctime, >)) {
     printf("[%6llu] frame time invalid ("TV_FMT" < "TV_FMT")\n",
            seq, TV_ARGS(&ctime), TV_ARGS(&ptime));
     errors++;
@@ -101,17 +86,16 @@ dump_fi(frame_index_t *pfi, frame_index_t *fi)
     errors++;
   }
 
+  if (ptime.tv_sec != ctime.tv_sec) {
+    printf("# fps = %u\n", fps);
+    fps = 0u;
+  }
+
   timersub(&ctime, &ptime, &tv_diff);
   printf("[%6llu] { %6"PRIu64" time = "TV_FMT", offset = %10"PRIu64", size = %10"PRIu32" } time diff: "TV_FMT"\n",
          seq, frame_seq, TV_ARGS(&ctime), offset, size, TV_ARGS(&tv_diff));
 
-  timeradd(&second, &tv_diff, &second);
   fps++;
-  if (!timercmp(&second, &one_second, <)) {
-    printf("# fps = %u, time counted = "TV_FMT"\n", fps, TV_ARGS(&second));
-    timerclear(&second);
-    fps = 0u;
-  }
 
   if (errors)
     return false;

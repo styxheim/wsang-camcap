@@ -49,13 +49,11 @@ typedef struct __attribute__((packed)) frame_header {
   /* frames per seconds */
   uint8_t fps;
   struct {
-    /* frame start time, result from clock_gettime() */
-    struct timebin local;
-    /* frame start time, result from gettimeofday() */
+    /* time of seq=0 frame in UTC time */
     struct timebin utc;
+    /* first frame time in frames pack after start capture */
+    struct timebin local;
   } cap_time;
-  /* time of first frame in pack */
-  struct timebin first_frame_time;
 } frame_header_t;
 
 static inline void
