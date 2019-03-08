@@ -88,7 +88,8 @@ dump_frame(struct walk_context *wlkc, frame_index_t *pfi)
   offset = BSWAP_BE64(pfi->offset_be64);
   dump_frame_index(pfi);
   if (lseek(wlkc->frm_ctx.fd, offset, SEEK_SET) != offset) {
-    fprintf(stderr, "ERROR: seek to frame start (%zu) not possible\n", offset);
+    fprintf(stderr, "ERROR: seek to frame start (%"PRIu64") not possible\n",
+            (uint64_t)offset);
     return false;
   }
 
