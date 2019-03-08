@@ -402,6 +402,7 @@ make_frame_header(struct devinfo *dev)
   timersub(&dev->c.last_frame_time, &dev->c.first_frame_time, &tv_diff);
 
   fh.seq_be32 = BSWAP_BE32(dev->trg.file_idx);
+  fh.seq_limit_be32 = BSWAP_BE32(dev->trg.files_limit);
   fh.fps = (uint8_t)dev->cam_info.frame_per_second;
   /* mark current frame as first */
   timebin_from_timeval(&fh.cap_time.local, &tv_diff);

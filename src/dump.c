@@ -64,7 +64,7 @@ dump_fi(frame_index_t *pfi, frame_index_t *fi)
   uint64_t frame_seq = BSWAP_BE64(fi->seq_be64);
 
   if (!FI_KEY_VALID(fi)) {
-    printf("[%6llu] invalid magic key: %x\n", seq, BSWAP_BE16(*((uint16_t*)fi->key)));
+    printf("[%6llu] invalid magic key: %x\n", seq, BSWAP_BE16(*((uint16_t*)fi->fi_key)));
     errors++;
   }
 

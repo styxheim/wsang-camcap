@@ -3,13 +3,16 @@
 LIBS+=-lev
 CFLAGS+=-g -Wall -Werror -pedantic
 
-all: capture dump
+all: capture dump extract
 
 clean:
-	rm -f capture dump
+	rm -f capture dump extract
 
 capture: src/main.c src/circle_buffer.c
 	${CC} -o $@ ${CFLAGS} $^ ${LIBS}
 
 dump: src/dump.c
+	${CC} -o $@ ${CFLAGS} $^ ${LIBS}
+
+extract: src/extract.c
 	${CC} -o $@ ${CFLAGS} $^ ${LIBS}

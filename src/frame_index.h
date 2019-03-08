@@ -18,8 +18,8 @@
 # error "what?"
 #endif
 
-#define FI_INIT_VALUE {.key = {'A', 'Z'}};
-#define FI_KEY_VALID(_fi) ((_fi)->key[0] == 'A' && (_fi)->key[1] == 'Z')
+#define FI_INIT_VALUE {.fi_key = {'A', 'Z'}};
+#define FI_KEY_VALID(_fi) ((_fi)->fi_key[0] == 'A' && (_fi)->fi_key[1] == 'Z')
 
 struct __attribute__((packed)) timebin {
   uint64_t sec_be64;
@@ -29,21 +29,22 @@ struct __attribute__((packed)) timebin {
 #define FH_PATH_SIZE 16
 /* index record for each frame */
 typedef struct __attribute__((packed)) frame_index {
-  char key[2];
+  char fi_key[2];
   struct timebin tv;
   uint64_t offset_be64;
   uint32_t size_be32;
   uint64_t seq_be64;
 } frame_index_t;
 
-#define FH_INIT_VALUE {.key = {'S', 'W', 'I', 'C'}}
-#define FH_KEY_VALID(_fh) (!memcmp((_fh)->key, "SWIC", 4))
+#define FH_INIT_VALUE {.fh_key = {'S', 'W', 'I', 'C'}}
+#define FH_KEY_VALID(_fh) (!memcmp((_fh)->fh_key, "SWIC", 4))
 
 /* file header */
 typedef struct __attribute__((packed)) frame_header {
-  char key[4];
+  char fh_key[4];
   /* sequence */
   uint32_t seq_be32;
+  uint32_t seq_limit_be32;
   /* path to frames file */
   uint8_t path[FH_PATH_SIZE];
   /* frames per seconds */
