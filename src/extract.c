@@ -43,7 +43,7 @@ struct walk_context {
   struct {
     int fd;
     char path[FH_PATH_SIZE + 1];
-  } frm_ctx;
+  } dump_ctx;
 };
 
 void
@@ -70,26 +70,26 @@ dump_frame(struct walk_context *wlkc, frame_index_t *pfi)
   int expect;
   int r;
 
-  if (strcmp(wlkc->frm_ctx.path, wlkc->frm_path)) {
-    if (!wlkc->frm_ctx.path[0])
+  if (strcmp(wlkc->dump_ctx.path, wlkc->frm_path)) {
+    if (!wlkc->dump_ctx.path[0])
       fprintf(stderr, "INFO: open frm pack '%s'\n", wlkc->frm_path);
     else
       fprintf(stderr, "INFO: change frm pack '%s' to '%s'\n",
-              wlkc->frm_ctx.path, wlkc->frm_path);
-    if (wlkc->frm_ctx.fd != -1)
-      close(wlkc->frm_ctx.fd);
-    memcpy(wlkc->frm_ctx.path, wlkc->frm_path, FH_PATH_SIZE + 1);
-    wlkc->frm_ctx.fd = open(wlkc->frm_ctx.path, O_RDONLY);
-    if (wlkc->frm_ctx.fd == -1) {
+              wlkc->dump_ctx.path, wlkc->frm_path);
+    if (wlkc->dump_ctx.fd != -1)
+      close(wlkc->dump_ctx.fd);
+    memcpy(wlkc->dump_ctx.path, wlkc->frm_path, FH_PATH_SIZE + 1);
+    wlkc->dump_ctx.fd = open(wlkc->dump_ctx.path, O_RDONLY);
+    if (wlkc->dump_ctx.fd == -1) {
       fprintf(stderr, "ERROR: open frm file '%s' failed: %s\n",
-              wlkc->frm_ctx.path, strerror(errno));
+              wlkc->dump_ctx.path, strerror(errno));
       return false;
     }
   }
   
   offset = BSWAP_BE64(pfi->offset_be);
   dump_frame_index(pfi);
-  if (lseek(wlkc->frm_ctx.fd, offset, SEEK_SET) != offset) {
+  if (lseek(wlkc->dump_ctx.fd, offset, SEEK_SET) != offset) {
     fprintf(stderr, "ERROR: seek to frame start (%"PRIu64") not possible\n",
             (uint64_t)offset);
     return false;
@@ -101,7 +101,7 @@ dump_frame(struct walk_context *wlkc, frame_index_t *pfi)
     expect = (frame_size - readed) % EXTRACT_BLK_SZ;
     if (!expect)
       expect = EXTRACT_BLK_SZ;
-    r = read(wlkc->frm_ctx.fd, buffer, expect);
+    r = read(wlkc->dump_ctx.fd, buffer, expect);
     if (r == -1) {
       fprintf(stderr, "ERROR: frm read failure: %s\n", strerror(errno));
       return false;
@@ -323,7 +323,7 @@ index_process(struct walk_context *wlkc,
 
   wlkc->file_seq = BSWAP_BE32(fh->seq_be);
   wlkc->file_seq_limit = BSWAP_BE32(fh->seq_limit_be);
-  snprintf(wlkc->frm_path, sizeof(wlkc->frm_ctx) - 1, "%s", fh->path);
+  snprintf(wlkc->frm_path, sizeof(wlkc->dump_ctx) - 1, "%s", fh->path);
 
   /* seek to frame */
   {
@@ -384,8 +384,8 @@ index_walk(struct walk_context *wlkc, const char *filepath)
 
   r = index_process(wlkc, filepath, frame_count, &fh, &fi);
   close(wlkc->fd);
-  if (wlkc->frm_ctx.fd != -1)
-    close(wlkc->frm_ctx.fd);
+  if (wlkc->dump_ctx.fd != -1)
+    close(wlkc->dump_ctx.fd);
   return r;
 }
 
@@ -423,7 +423,7 @@ main(int argc, char *argv[])
 
   struct walk_context wlkc = {0};
   wlkc.fd = -1;
-  wlkc.frm_ctx.fd = -1;
+  wlkc.dump_ctx.fd = -1;
   wlkc.output_fd = OUTPUT_FD;
 
   if (argc < 3) {
