@@ -47,14 +47,19 @@ typedef struct __attribute__((packed)) frame_header {
   uint32_t seq_limit_be32;
   /* path to frames file */
   uint8_t path[FH_PATH_SIZE];
-  /* frames per seconds */
-  uint8_t fps;
   struct {
     /* time of seq=0 frame in UTC time */
     struct timebin utc;
     /* first frame time in frames pack after start capture */
     struct timebin local;
   } cap_time;
+
+  struct {
+    /* frames per seconds */
+    uint8_t fps;
+    uint16_t width_be;
+    uint16_t height_be;
+  } frame;
 } frame_header_t;
 
 static inline void

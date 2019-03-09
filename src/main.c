@@ -403,7 +403,9 @@ make_frame_header(struct devinfo *dev)
 
   fh.seq_be32 = BSWAP_BE32(dev->trg.file_idx);
   fh.seq_limit_be32 = BSWAP_BE32(dev->trg.files_limit);
-  fh.fps = (uint8_t)dev->cam_info.frame_per_second;
+  fh.frame.fps = (uint8_t)dev->cam_info.frame_per_second;
+  fh.frame.width_be = BSWAP_BE16((uint16_t)dev->frame_width);
+  fh.frame.height_be = BSWAP_BE16((uint16_t)dev->frame_height);
   /* mark current frame as first */
   timebin_from_timeval(&fh.cap_time.local, &tv_diff);
 

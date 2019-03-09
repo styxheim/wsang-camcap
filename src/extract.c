@@ -328,7 +328,7 @@ index_process(struct walk_context *wlkc,
   /* seek to frame */
   {
     off_t _seek_to_frame;
-    _seek_to_frame = (fh->fps * (wlkc->local_start.tv_sec - fh_local.tv_sec));
+    _seek_to_frame = (fh->frame.fps * (wlkc->local_start.tv_sec - fh_local.tv_sec));
     if (_seek_to_frame > frame_count) {
       _seek_to_frame = frame_count - 1;
     }
