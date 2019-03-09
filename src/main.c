@@ -401,8 +401,8 @@ make_frame_header(struct devinfo *dev)
 
   timersub(&dev->c.last_frame_time, &dev->c.first_frame_time, &tv_diff);
 
-  fh.seq_be32 = BSWAP_BE32(dev->trg.file_idx);
-  fh.seq_limit_be32 = BSWAP_BE32(dev->trg.files_limit);
+  fh.seq_be = BSWAP_BE32(dev->trg.file_idx);
+  fh.seq_limit_be = BSWAP_BE32(dev->trg.files_limit);
   fh.frame.fps = (uint8_t)dev->cam_info.frame_per_second;
   fh.frame.width_be = BSWAP_BE16((uint16_t)dev->frame_width);
   fh.frame.height_be = BSWAP_BE16((uint16_t)dev->frame_height);
@@ -495,9 +495,9 @@ capture_process(struct devinfo *dev,
 
   timersub(&cam_buf->timestamp, &dev->c.first_frame_time, &frame_time);
   timebin_from_timeval(&fi.tv, &frame_time);
-  fi.offset_be64 = BSWAP_BE64(dev->trg.frame.written - cam_buf->bytesused);
-  fi.size_be32 = BSWAP_BE32(cam_buf->bytesused);
-  fi.seq_be64 = BSWAP_BE64((uint64_t)dev->c.frames_arrived);
+  fi.offset_be = BSWAP_BE64(dev->trg.frame.written - cam_buf->bytesused);
+  fi.size_be = BSWAP_BE32(cam_buf->bytesused);
+  fi.seq_be = BSWAP_BE64((uint64_t)dev->c.frames_arrived);
 
   if (!wbf_write(dev, &dev->trg.index, (uint8_t*)&fi, sizeof(fi))) {
     fprintf(stderr, "! write index for frame  %zu failed\n",

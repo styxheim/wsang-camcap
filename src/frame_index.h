@@ -22,8 +22,8 @@
 #define FI_KEY_VALID(_fi) ((_fi)->fi_key[0] == 'A' && (_fi)->fi_key[1] == 'Z')
 
 struct __attribute__((packed)) timebin {
-  uint64_t sec_be64;
-  uint32_t usec_be32;
+  uint64_t sec_be;
+  uint32_t usec_be;
 };
 
 #define FH_PATH_SIZE 16
@@ -31,9 +31,9 @@ struct __attribute__((packed)) timebin {
 typedef struct __attribute__((packed)) frame_index {
   char fi_key[2];
   struct timebin tv;
-  uint64_t offset_be64;
-  uint32_t size_be32;
-  uint64_t seq_be64;
+  uint64_t offset_be;
+  uint32_t size_be;
+  uint64_t seq_be;
 } frame_index_t;
 
 #define FH_INIT_VALUE {.fh_key = {'S', 'W', 'I', 'C'}}
@@ -43,8 +43,8 @@ typedef struct __attribute__((packed)) frame_index {
 typedef struct __attribute__((packed)) frame_header {
   char fh_key[4];
   /* sequence */
-  uint32_t seq_be32;
-  uint32_t seq_limit_be32;
+  uint32_t seq_be;
+  uint32_t seq_limit_be;
   /* path to frames file */
   uint8_t path[FH_PATH_SIZE];
   struct {
@@ -65,15 +65,15 @@ typedef struct __attribute__((packed)) frame_header {
 static inline void
 timebin_from_timeval(struct timebin *tb, struct timeval *tv)
 {
-  tb->sec_be64 = BSWAP_BE64((uint64_t)tv->tv_sec);
-  tb->usec_be32 = BSWAP_BE32((uint32_t)(tv->tv_usec));
+  tb->sec_be = BSWAP_BE64((uint64_t)tv->tv_sec);
+  tb->usec_be = BSWAP_BE32((uint32_t)(tv->tv_usec));
 }
 
 static inline void
 timebin_to_timeval(struct timebin *tb, struct timeval *tv)
 {
-  tv->tv_sec = BSWAP_BE64(tb->sec_be64);
-  tv->tv_usec = BSWAP_BE32(tb->usec_be32);
+  tv->tv_sec = BSWAP_BE64(tb->sec_be);
+  tv->tv_usec = BSWAP_BE32(tb->usec_be);
 }
 
 #define TV_FMT "%"PRIu64".%.06"PRIu64

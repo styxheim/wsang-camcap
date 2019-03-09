@@ -56,22 +56,22 @@ dump_fi(frame_index_t *pfi, frame_index_t *fi)
   timebin_to_timeval(&fi->tv, &ctime);
   timebin_to_timeval(&pfi->tv, &ptime);
 
-  uint64_t offset = BSWAP_BE64(fi->offset_be64);
-  uint32_t size = BSWAP_BE32(fi->size_be32);
+  uint64_t offset = BSWAP_BE64(fi->offset_be);
+  uint32_t size = BSWAP_BE32(fi->size_be);
 
-  uint64_t poffset = BSWAP_BE64(pfi->offset_be64);
-  uint32_t psize = BSWAP_BE32(pfi->size_be32);
+  uint64_t poffset = BSWAP_BE64(pfi->offset_be);
+  uint32_t psize = BSWAP_BE32(pfi->size_be);
 
-  uint64_t frame_seq = BSWAP_BE64(fi->seq_be64);
+  uint64_t frame_seq = BSWAP_BE64(fi->seq_be);
 
   if (!FI_KEY_VALID(fi)) {
     printf("[%6llu] invalid magic key: %x\n", seq, BSWAP_BE16(*((uint16_t*)fi->fi_key)));
     errors++;
   }
 
-  if (BSWAP_BE16(fi->tv.usec_be32) > 1000000) {
+  if (BSWAP_BE16(fi->tv.usec_be) > 1000000) {
     printf("[%6llu] invalid microseconds value: %"PRIu32"\n",
-           seq, BSWAP_BE16(fi->tv.usec_be32));
+           seq, BSWAP_BE16(fi->tv.usec_be));
     errors++;
   }
 

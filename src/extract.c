@@ -54,10 +54,10 @@ dump_frame_index(frame_index_t *pfi)
   fprintf(stderr, "INFO: frame [%6"PRIu64"] { "
           "time = "TV_FMT", offset = %10"PRIu64", size = %10"PRIu32" "
           "}\n",
-          BSWAP_BE64(pfi->seq_be64),
+          BSWAP_BE64(pfi->seq_be),
           TV_ARGS(&tv),
-          BSWAP_BE64(pfi->offset_be64),
-          BSWAP_BE32(pfi->size_be32));
+          BSWAP_BE64(pfi->offset_be),
+          BSWAP_BE32(pfi->size_be));
 }
 
 bool
@@ -87,7 +87,7 @@ dump_frame(struct walk_context *wlkc, frame_index_t *pfi)
     }
   }
   
-  offset = BSWAP_BE64(pfi->offset_be64);
+  offset = BSWAP_BE64(pfi->offset_be);
   dump_frame_index(pfi);
   if (lseek(wlkc->frm_ctx.fd, offset, SEEK_SET) != offset) {
     fprintf(stderr, "ERROR: seek to frame start (%"PRIu64") not possible\n",
@@ -96,7 +96,7 @@ dump_frame(struct walk_context *wlkc, frame_index_t *pfi)
   }
 
   readed = 0u;
-  frame_size = BSWAP_BE32(pfi->size_be32);
+  frame_size = BSWAP_BE32(pfi->size_be);
   while (readed != frame_size) {
     expect = (frame_size - readed) % EXTRACT_BLK_SZ;
     if (!expect)
@@ -199,17 +199,17 @@ frame_index_open_next(struct walk_context *wlkc)
     return false;
   }
   
-  if (BSWAP_BE32(fh.seq_be32) != wlkc->file_seq) {
+  if (BSWAP_BE32(fh.seq_be) != wlkc->file_seq) {
     fprintf(stderr, "ERROR: inconsistent sequence: "
             "received != expected: %"PRIu32" != %"PRIu32"\n",
-            BSWAP_BE32(fh.seq_be32), wlkc->file_seq);
+            BSWAP_BE32(fh.seq_be), wlkc->file_seq);
     return false;
   }
 
-  if (BSWAP_BE32(fh.seq_limit_be32) != wlkc->file_seq_limit) {
+  if (BSWAP_BE32(fh.seq_limit_be) != wlkc->file_seq_limit) {
     fprintf(stderr, "ERROR: inconsistent sequence limit: "
             "received != expected: %"PRIu32" != %"PRIu32"\n",
-            BSWAP_BE32(fh.seq_limit_be32), wlkc->file_seq);
+            BSWAP_BE32(fh.seq_limit_be), wlkc->file_seq);
     return false;
   }
 
@@ -225,7 +225,7 @@ frame_index_walk_until_end(struct walk_context *wlkc, frame_index_t *pfi)
   struct timeval tv = {0};
 
   dump_frame(wlkc, pfi);
-  wlkc->frame_seq = BSWAP_BE64(pfi->seq_be64);
+  wlkc->frame_seq = BSWAP_BE64(pfi->seq_be);
   while (timercmp(&wlkc->local_end, &tv, >))
   {
     if (read(wlkc->fd, pfi, sizeof(*pfi)) == 0) {
@@ -236,10 +236,10 @@ frame_index_walk_until_end(struct walk_context *wlkc, frame_index_t *pfi)
       }
       continue;
     }
-    if (BSWAP_BE64(pfi->seq_be64) != wlkc->frame_seq + 1) {
+    if (BSWAP_BE64(pfi->seq_be) != wlkc->frame_seq + 1) {
       fprintf(stderr, "ERROR: invalid frame sequence: "
               "expected: %"PRIu64" received: %"PRIu64"\n",
-              BSWAP_BE64(pfi->seq_be64), wlkc->frame_seq + 1);
+              BSWAP_BE64(pfi->seq_be), wlkc->frame_seq + 1);
       return;
     }
     timebin_to_timeval(&pfi->tv, &tv);
@@ -321,8 +321,8 @@ index_process(struct walk_context *wlkc,
   fprintf(stderr, "INFO: use file '%s' relative { start = "TV_FMT", end = "TV_FMT" }\n",
          filepath, TV_ARGS(&wlkc->local_start), TV_ARGS(&wlkc->local_end));
 
-  wlkc->file_seq = BSWAP_BE32(fh->seq_be32);
-  wlkc->file_seq_limit = BSWAP_BE32(fh->seq_limit_be32);
+  wlkc->file_seq = BSWAP_BE32(fh->seq_be);
+  wlkc->file_seq_limit = BSWAP_BE32(fh->seq_limit_be);
   snprintf(wlkc->frm_path, sizeof(wlkc->frm_ctx) - 1, "%s", fh->path);
 
   /* seek to frame */
