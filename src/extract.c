@@ -404,8 +404,10 @@ dir_walk(struct walk_context *wlkc, const char *dirpath)
   while ((rd = readdir(dirp)) != NULL) {
     if (!strncmp(rd->d_name, FILE_IDX_PREFIX, sizeof(FILE_IDX_PREFIX) - 1)) {
       file_count++;
-      if (!index_walk(wlkc, rd->d_name))
+      if (!index_walk(wlkc, rd->d_name)) {
+        closedir(dirp);
         return false;
+      }
     }
   }
 
