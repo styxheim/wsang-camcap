@@ -26,6 +26,8 @@
 
 struct walk_context {
   int fd;
+
+  int output_fd;
   time_t start_time;
   time_t duration;
   struct timeval local_start;
@@ -109,12 +111,14 @@ dump_frame(struct walk_context *wlkc, frame_index_t *pfi)
       fprintf(stderr, "ERROR: frm unexpected EOF: readed=%zu, expected=%zu (%d, %d)\n",
              readed, frame_size, r, expect);
     }
-    
-    expect = r;
-    r = write(OUTPUT_FD, buffer, expect);
-    if (r == -1 || r == 0) {
-      fprintf(stderr, "ERROR: write failure %s\n", strerror(errno));
-      return false;
+
+    if (wlkc->output_fd != -1) {
+      expect = r;
+      r = write(wlkc->output_fd, buffer, expect);
+      if (r == -1 || r == 0) {
+        fprintf(stderr, "ERROR: write failure %s\n", strerror(errno));
+        return false;
+      }
     }
   }
 
@@ -420,11 +424,17 @@ main(int argc, char *argv[])
   struct walk_context wlkc = {0};
   wlkc.fd = -1;
   wlkc.frm_ctx.fd = -1;
+  wlkc.output_fd = OUTPUT_FD;
 
   if (argc < 3) {
     fprintf(stderr, "Extract frames to stdout from current directory\n");
     fprintf(stderr, "usage: <utc_seconds_start> <seconds_duration>\n");
     return EXIT_FAILURE;
+  }
+
+  if (isatty(wlkc.output_fd)) {
+    wlkc.output_fd = -1;
+    fprintf(stderr, "INFO: disabling dump frames. Output is terminal\n");
   }
 
   wlkc.start_time = (time_t)strtoul(argv[1], NULL, 10);
