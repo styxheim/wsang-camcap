@@ -51,6 +51,7 @@ struct walk_context {
   } dump_ctx;
 
   struct {
+    bool started;
     struct timeval start_time;
     struct frame_record *fr;
     unsigned current;
@@ -278,14 +279,19 @@ frame_sort_income(struct walk_context *wlkc, frame_index_t *pfi)
   }
 
   timebin_to_timeval(&pfi->tv, &tv);
-  if (tv.tv_sec != wlkc->sort_ctx.start_time.tv_sec) {
-    /* dump previous frames */
-    fprintf(stderr, "INFO: dump frame because time, count: %u\n",
-            wlkc->sort_ctx.current);
-    frame_sort_normalize(wlkc);
-    frame_sort_dump(wlkc);
-    /* process next */
-    wlkc->sort_ctx.current = 0u;
+  if (wlkc->sort_ctx.started) {
+    if (tv.tv_sec != wlkc->sort_ctx.start_time.tv_sec) {
+      /* dump previous frames */
+      fprintf(stderr, "INFO: dump frame because time, count: %u\n",
+              wlkc->sort_ctx.current);
+      frame_sort_normalize(wlkc);
+      frame_sort_dump(wlkc);
+      /* process next */
+      wlkc->sort_ctx.current = 0u;
+      memcpy(&wlkc->sort_ctx.start_time, &tv, sizeof(tv));
+    }
+  } else {
+    wlkc->sort_ctx.started = true;
     memcpy(&wlkc->sort_ctx.start_time, &tv, sizeof(tv));
   }
 
