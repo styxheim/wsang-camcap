@@ -24,6 +24,11 @@
 /* write to stdout */
 #define OUTPUT_FD STDOUT_FILENO
 
+struct frame_record {
+  char frm[FH_PATH_SIZE + 1];
+  frame_index_t fi;
+};
+
 struct walk_context {
   int fd;
 
@@ -44,6 +49,13 @@ struct walk_context {
     int fd;
     char path[FH_PATH_SIZE + 1];
   } dump_ctx;
+
+  struct {
+    struct timeval start_time;
+    struct frame_record *fr;
+    unsigned current;
+    unsigned fps;
+  } sort_ctx;
 };
 
 void
@@ -61,7 +73,8 @@ dump_frame_index(frame_index_t *pfi)
 }
 
 bool
-dump_frame(struct walk_context *wlkc, frame_index_t *pfi)
+dump_frame(struct walk_context *wlkc,
+           frame_index_t *pfi, char path[FH_PATH_SIZE + 1])
 {
   off_t offset;
   char buffer[EXTRACT_BLK_SZ];
@@ -70,15 +83,15 @@ dump_frame(struct walk_context *wlkc, frame_index_t *pfi)
   int expect;
   int r;
 
-  if (strcmp(wlkc->dump_ctx.path, wlkc->frm_path)) {
+  if (strcmp(wlkc->dump_ctx.path, path)) {
     if (!wlkc->dump_ctx.path[0])
-      fprintf(stderr, "INFO: open frm pack '%s'\n", wlkc->frm_path);
+      fprintf(stderr, "INFO: open frm pack '%s'\n", path);
     else
       fprintf(stderr, "INFO: change frm pack '%s' to '%s'\n",
-              wlkc->dump_ctx.path, wlkc->frm_path);
+              wlkc->dump_ctx.path, path);
     if (wlkc->dump_ctx.fd != -1)
       close(wlkc->dump_ctx.fd);
-    memcpy(wlkc->dump_ctx.path, wlkc->frm_path, FH_PATH_SIZE + 1);
+    memcpy(wlkc->dump_ctx.path, path, FH_PATH_SIZE + 1);
     wlkc->dump_ctx.fd = open(wlkc->dump_ctx.path, O_RDONLY);
     if (wlkc->dump_ctx.fd == -1) {
       fprintf(stderr, "ERROR: open frm file '%s' failed: %s\n",
@@ -90,8 +103,9 @@ dump_frame(struct walk_context *wlkc, frame_index_t *pfi)
   offset = BSWAP_BE64(pfi->offset_be);
   dump_frame_index(pfi);
   if (lseek(wlkc->dump_ctx.fd, offset, SEEK_SET) != offset) {
-    fprintf(stderr, "ERROR: seek to frame start (%"PRIu64") not possible\n",
-            (uint64_t)offset);
+    fprintf(stderr, "ERROR: seek to frame start (%"PRIu64") "
+            "not possible in file '%s'\n",
+            (uint64_t)offset, wlkc->dump_ctx.path);
     return false;
   }
 
@@ -198,7 +212,14 @@ frame_index_open_next(struct walk_context *wlkc)
     fprintf(stderr, "ERROR: incomplete data: stripped frame header\n");
     return false;
   }
-  
+
+  if (fh.frame.fps != wlkc->sort_ctx.fps) {
+    fprintf(stderr, "ERROR: inconsistent frame rate: "
+            "expected %u but value is %"PRIu8"\n",
+            wlkc->sort_ctx.fps, fh.frame.fps);
+    return false;
+  }
+
   if (BSWAP_BE32(fh.seq_be) != wlkc->file_seq) {
     fprintf(stderr, "ERROR: inconsistent sequence: "
             "received != expected: %"PRIu32" != %"PRIu32"\n",
@@ -218,13 +239,78 @@ frame_index_open_next(struct walk_context *wlkc)
   return true;
 }
 
+void
+frame_sort_dump(struct walk_context *wlkc)
+{
+  unsigned i;
+  fprintf(stderr, "INFO: dump %u frames\n", wlkc->sort_ctx.current);
+  for (i = 0u; i < wlkc->sort_ctx.current; i++) {
+    dump_frame(wlkc, &wlkc->sort_ctx.fr[i].fi, wlkc->sort_ctx.fr[i].frm);
+  }
+}
+
+void
+frame_sort_normalize(struct walk_context *wlkc)
+{
+  struct frame_record fr;
+  if (wlkc->sort_ctx.current == wlkc->sort_ctx.fps)
+    return;
+
+  memcpy(&fr, &wlkc->sort_ctx.fr[wlkc->sort_ctx.current - 1], sizeof(fr));
+  /* simple method: copy last frame to empty slots */
+  for (; wlkc->sort_ctx.current < wlkc->sort_ctx.fps; wlkc->sort_ctx.current++) {
+    memcpy(&wlkc->sort_ctx.fr[wlkc->sort_ctx.current], &fr, sizeof(fr));
+  }
+}
+
+void
+frame_sort_income(struct walk_context *wlkc, frame_index_t *pfi)
+{
+  struct timeval tv;
+  if (!pfi) {
+    /* dump frame list */
+    fprintf(stderr, "INFO: dump frame because EOF\n");
+    frame_sort_normalize(wlkc);
+    frame_sort_dump(wlkc);
+    wlkc->sort_ctx.current = 0u;
+    timerclear(&wlkc->sort_ctx.start_time);
+    return;
+  }
+
+  timebin_to_timeval(&pfi->tv, &tv);
+  if (tv.tv_sec != wlkc->sort_ctx.start_time.tv_sec) {
+    /* dump previous frames */
+    fprintf(stderr, "INFO: dump frame because time, count: %u\n",
+            wlkc->sort_ctx.current);
+    frame_sort_normalize(wlkc);
+    frame_sort_dump(wlkc);
+    /* process next */
+    wlkc->sort_ctx.current = 0u;
+    memcpy(&wlkc->sort_ctx.start_time, &tv, sizeof(tv));
+  }
+
+  if (wlkc->sort_ctx.current == wlkc->sort_ctx.fps) {
+    fprintf(stderr, "WARN: too many frames (%u > %u): "
+            "drop frame #%"PRIu64"\n",
+            wlkc->sort_ctx.current + 1, wlkc->sort_ctx.fps,
+            BSWAP_BE64(pfi->seq_be));
+    return;
+  }
+
+  memcpy(&wlkc->sort_ctx.fr[wlkc->sort_ctx.current].fi, pfi, sizeof(*pfi));
+  memcpy(wlkc->sort_ctx.fr[wlkc->sort_ctx.current].frm,
+         wlkc->frm_path, sizeof(wlkc->frm_path));
+  wlkc->sort_ctx.current++;
+}
+
 /* dump frames until end */
 void
 frame_index_walk_until_end(struct walk_context *wlkc, frame_index_t *pfi)
 {
   struct timeval tv = {0};
 
-  dump_frame(wlkc, pfi);
+  frame_sort_income(wlkc, pfi);
+
   wlkc->frame_seq = BSWAP_BE64(pfi->seq_be);
   while (timercmp(&wlkc->local_end, &tv, >))
   {
@@ -244,7 +330,7 @@ frame_index_walk_until_end(struct walk_context *wlkc, frame_index_t *pfi)
     }
     timebin_to_timeval(&pfi->tv, &tv);
     wlkc->frame_seq++;
-    dump_frame(wlkc, pfi);
+    frame_sort_income(wlkc, pfi);
   }
 }
 
@@ -276,6 +362,20 @@ frame_index_walk(struct walk_context *wlkc)
   }
 
   frame_index_walk_until_end(wlkc, &fi);
+}
+
+bool
+init_sort_context(struct walk_context *wlkc, unsigned fps)
+{
+  fprintf(stderr, "INFO: allocate sort buffer for %u frames\n", fps);
+  wlkc->sort_ctx.fr = calloc(fps, sizeof(*wlkc->sort_ctx.fr));
+  if (!wlkc->sort_ctx.fr) {
+    fprintf(stderr, "ERROR: allocate %zu bytes failed: %s\n",
+            sizeof(*wlkc->sort_ctx.fr) * fps, strerror(errno));
+    return false;
+  }
+  wlkc->sort_ctx.fps = fps;
+  return true;
 }
 
 bool
@@ -324,6 +424,7 @@ index_process(struct walk_context *wlkc,
   wlkc->file_seq = BSWAP_BE32(fh->seq_be);
   wlkc->file_seq_limit = BSWAP_BE32(fh->seq_limit_be);
   snprintf(wlkc->frm_path, sizeof(wlkc->dump_ctx) - 1, "%s", fh->path);
+  init_sort_context(wlkc, fh->frame.fps);
 
   /* seek to frame */
   {
@@ -384,8 +485,16 @@ index_walk(struct walk_context *wlkc, const char *filepath)
 
   r = index_process(wlkc, filepath, frame_count, &fh, &fi);
   close(wlkc->fd);
+
+  if (wlkc->sort_ctx.fr) {
+    /* purge frames */
+    frame_sort_income(wlkc, NULL);
+    free(wlkc->sort_ctx.fr);
+  }
+
   if (wlkc->dump_ctx.fd != -1)
     close(wlkc->dump_ctx.fd);
+
   return r;
 }
 
