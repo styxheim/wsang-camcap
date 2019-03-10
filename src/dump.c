@@ -24,11 +24,12 @@ dump_fh(frame_header_t *fh, size_t file_size)
   timebin_to_timeval(&fh->cap_time.local, &ltime);
   timebin_to_timeval(&fh->cap_time.utc, &utc);
 
-  printf("# HEADER < "
+  printf("# HEADER [%"PRIu32"] < "
          "frames = %zu, fps = %u [%dx%d], "
          "first frame time = "TV_FMT", "
          "UTC start time = "TV_FMT" "
          ">\n",
+         BSWAP_BE32(fh->seq_be),
          (file_size - sizeof(frame_header_t)) / sizeof(frame_index_t),
          fh->frame.fps,
          BSWAP_BE16(fh->frame.width_be), BSWAP_BE16(fh->frame.height_be),
