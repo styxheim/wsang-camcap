@@ -206,7 +206,7 @@ frame_index_open_next(struct walk_context *wlkc)
   }
   close(wlkc->fd);
   wlkc->fd = new_fd;
-  wlkc->file_seq = next_idx;
+  wlkc->file_seq++;
 
   if (read(new_fd, &fh, sizeof(fh)) != sizeof(fh)) {
     fprintf(stderr, "ERROR: incomplete data: stripped frame header\n");
