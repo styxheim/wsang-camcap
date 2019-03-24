@@ -410,8 +410,12 @@ index_process(struct walk_context *wlkc,
   /* convert global time to local */
   timersub(&wlkc->local_start, &fh_utc, &wlkc->local_start);
   timerclear(&wlkc->local_end);
-  wlkc->local_end.tv_sec = wlkc->local_start.tv_sec + wlkc->duration;
-  wlkc->local_end.tv_usec = wlkc->local_start.tv_usec;
+  if (wlkc->local_start.tv_usec) {
+    /* round to upper */
+    wlkc->local_end.tv_sec = wlkc->local_start.tv_sec + wlkc->duration + 1;
+  } else {
+    wlkc->local_end.tv_sec = wlkc->local_start.tv_sec + wlkc->duration;
+  }
   
   timebin_to_timeval(&fi->tv, &frame_time);
   /* check end time */

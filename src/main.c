@@ -28,13 +28,6 @@
 #define FRAMES_DB "frames.mjpeg"
 #define INDEX_DB "frames_idx.db"
 
-#ifndef MAX
-# define MAX(a,b) (((a)>(b))?(a):(b))
-#endif
-#ifndef MIN
-# define MIN(a,b) (((a)<(b))?(a):(b))
-#endif
-
 #define WQUEUE_WRITE_BLOCK_SZ 4098
 #if 1
 # define BUFFERS_SWAP_COUNT 8
