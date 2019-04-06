@@ -52,5 +52,10 @@ cbf_get(struct circle_buffer *cbf, uint8_t *p, size_t len);
 size_t
 cbf_discard(struct circle_buffer *cbf, size_t len);
 
+/* free all data and destroy struct
+ */
+void
+cbf_destroy(struct circle_buffer *cbf);
+
 #endif /* _CIRCLE_BUFFER_1551711442_H_ */
 
