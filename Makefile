@@ -8,7 +8,10 @@ all: capture dump extract
 clean:
 	rm -f capture dump extract
 
-capture: src/main.c src/circle_buffer.c
+capture: src/main.c \
+				 src/circle_buffer.c \
+				 src/main_write_thread.c \
+				 src/main.h
 	${CC} -o $@ ${CFLAGS} $^ ${LIBS}
 
 dump: src/dump.c
