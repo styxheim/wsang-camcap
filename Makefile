@@ -1,6 +1,6 @@
 # vim: ft=make ff=unix fenc=utf-8
 # file: Makefile
-LIBS+=-lev
+LIBS+=-lev -lpthread
 CFLAGS+=-g -Wall -Werror -pedantic
 
 all: capture dump extract
@@ -10,8 +10,7 @@ clean:
 
 capture: src/main.c \
 				 src/circle_buffer.c \
-				 src/main_write_thread.c \
-				 src/main.h
+				 src/main_write_thread.c
 	${CC} -o $@ ${CFLAGS} $^ ${LIBS}
 
 dump: src/dump.c

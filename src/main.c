@@ -15,10 +15,12 @@
 #include <sys/ioctl.h>
 #include <sys/time.h>
 #include <assert.h>
-
 #include <ev.h>
+#include <pthread.h>
 
 #include <linux/videodev2.h>
+
+#include "main.h"
 
 #include "frame_index.h"
 #include "circle_buffer.h"
@@ -607,21 +609,42 @@ camera_cb(struct ev_loop *loop, ev_io *w, int revents)
   }
 }
 
+static void
+sig_int_cb(struct ev_loop *loop, ev_signal *w, int revents)
+{
+  fprintf(stderr, "@ INTERRUPT\n");
+  ev_break(loop, EVBREAK_ALL);
+}
+
+
 
 int
 main(int argc, char *argv[])
 {
   struct ev_loop *loop = EV_DEFAULT;
+  struct write_thread_context wt_ctx = {0};
   
   if (!init_device(loop, &devinfo))
     return EXIT_FAILURE;
 
+  ev_signal sigint;
+  ev_signal_init(&sigint, sig_int_cb, SIGINT);
+  ev_signal_start(loop, &sigint);
+
   ev_io_init(&devinfo.ev, camera_cb, devinfo.fd, EV_READ);
   ev_io_start(loop, &devinfo.ev);
+
+  write_thread_alloc(&wt_ctx);
 
   capture(&devinfo);
 
   ev_run(loop, 0);
+
+  ev_io_stop(loop, &devinfo.ev);
+  ev_signal_stop(loop, &sigint);
+
+  write_thread_free(&wt_ctx);
+  ev_loop_destroy(loop);
 
   return EXIT_SUCCESS;
 }
