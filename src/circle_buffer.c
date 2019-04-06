@@ -7,6 +7,12 @@
 #include "circle_buffer.h"
 
 size_t
+cbf_occupied_space(struct circle_buffer *cbf)
+{
+  return cbf->capacity - cbf->free_space;
+}
+
+size_t
 cbf_free_space(struct circle_buffer *cbf)
 {
   return cbf->free_space;
