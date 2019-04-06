@@ -6,10 +6,10 @@
 
 #include "circle_buffer.h"
 
-bool
-cbf_is_empty(struct circle_buffer *cbf)
+size_t
+cbf_free_space(struct circle_buffer *cbf)
 {
-  return cbf->free_space == cbf->capacity;
+  return cbf->free_space;
 }
 
 bool

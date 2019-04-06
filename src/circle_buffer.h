@@ -23,8 +23,8 @@ struct circle_buffer {
   uint8_t *end_p;
 };
 
-bool
-cbf_is_empty(struct circle_buffer *cbf);
+size_t
+cbf_free_space(struct circle_buffer *cbf);
 
 bool
 cbf_init(struct circle_buffer *cbf, size_t capacity);
