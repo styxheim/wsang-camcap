@@ -78,13 +78,17 @@ void wth_close(struct wth_context *ctx, wth_fd fd)
 }
 
 struct header {
+  char guard_l[2]; /* must be zeros */
   unsigned idx;
   size_t data_size;
+  char guard_r[2];  /* must be zeros */
 };
+
+#define HEADER_INIT {.guard_l = {'A', 'Z'}, .guard_r = {'F', 'N'}};
 
 ssize_t wth_write(struct wth_context *ctx, wth_fd fd, uint8_t *p, size_t size)
 {
-  struct header hd = {0};
+  struct header hd = HEADER_INIT;
 
   size_t free_space;
   size_t occupied_space;
@@ -158,7 +162,7 @@ static void
 async_write_cb(struct ev_loop *loop, ev_async *w, int revents)
 {
   uint8_t wrblk[WRITE_BLOCK_SIZE] = {0};
-  struct header hd = {0};
+  struct header hd = HEADER_INIT;
   struct wth_context *ctx = ev_userdata(loop);
 
   struct wth_file_desc *fd_desc;
@@ -200,6 +204,11 @@ async_write_cb(struct ev_loop *loop, ev_async *w, int revents)
         /* need more bytes */
         break;
       }
+
+      assert(hd.guard_l[0] == 'A' &&
+             hd.guard_l[1] == 'Z' &&
+             hd.guard_r[0] == 'F' &&
+             hd.guard_r[1] == 'N');
 
       fd_desc = open_file(ctx, hd.idx);
       if (!fd_desc) {
