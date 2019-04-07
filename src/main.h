@@ -6,8 +6,12 @@
 
 #include <stdatomic.h>
 
-#define log(_module, _level, _fmt, ...) \
-  fprintf(stderr, "%s: [%s] " _fmt "\n", _level, _module, ##__VA_ARGS__)
+#define log(_module, _level, ...)                   \
+  do {                                              \
+    fprintf(stderr, "%s: [%s] ", _level, _module);  \
+    fprintf(stderr, __VA_ARGS__);                   \
+    fprintf(stderr, "\n");                          \
+  } while(0)
 
 #define WTH_MAX_FILES 16
 

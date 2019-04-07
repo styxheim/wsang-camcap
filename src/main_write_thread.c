@@ -18,14 +18,14 @@
 
 #define WTH_FD_SAFETY_OFFSET 1000
 
-#define log_info(_fmt, ...) \
-  log("write_thread", "INFO", _fmt, ##__VA_ARGS__)
+#define log_info(...) \
+  log("write_thread", "INFO", __VA_ARGS__)
 
-#define log_debug(_fmt, ...) \
-  log("write_thread", "DEBUG", _fmt, ##__VA_ARGS__)
+#define log_debug(...) \
+  log("write_thread", "DEBUG", __VA_ARGS__)
 
-#define log_error(_fmt, ...) \
-  log("write_thread", "ERROR", _fmt, ##__VA_ARGS__)
+#define log_error(...) \
+  log("write_thread", "ERROR", __VA_ARGS__)
 
 #define WRITE_BLOCK_SIZE (1024 * 1024 /* 1MB */)
 static void
