@@ -75,6 +75,7 @@ struct devinfo {
 
   /* output queue: frames and indexes */
   struct {
+    struct wth_context *ctx;
     /* if limit reached, wbf.index got zero */
     size_t files_limit;
     size_t size_limit;
@@ -376,10 +377,13 @@ wbf_write(struct devinfo *dev, struct wbf *wb, uint8_t *p, size_t len)
 {
   ssize_t r;
 
+#if 0 /* SIMPLE_WRITE */
   r = write(wb->fd, p, len);
+#else
+  r = wth_write(dev->trg.ctx, wb->fd, p, len);
+#endif
   if (r != len) {
-    fprintf(stderr, "! write to '%s' incomplete: %zd != %zu. "
-            "Trying write to next file\n",
+    fprintf(stderr, "! write to '%s' incomplete: %zd != %zu.\n",
             wb->path, r, len);
     return false;
   }
@@ -429,11 +433,18 @@ wbf_make_file(struct devinfo *dev, struct wbf *wb)
   else
     wbf_make_filename(dev, wb, dev->trg.file_idx);
 
+#if 0 /* SIMPLE_WRITE */
   if (wb->fd > 0)
     close(wb->fd);
 
   wb->fd = open(wb->path, O_CREAT | O_TRUNC | O_WRONLY,
                   S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP);
+#else
+  if (wb->fd > 0)
+    wth_close(dev->trg.ctx, wb->fd);
+
+  wb->fd = wth_open(dev->trg.ctx, wb->path);
+#endif
 
   if (wb->fd == -1) {
     fprintf(stderr, "! file '%s' not openned for writing.\n", wb->path);
@@ -484,7 +495,7 @@ capture_process(struct devinfo *dev,
 
   if (!wbf_write(dev, &dev->trg.frame, p, cam_buf->bytesused)) {
     fprintf(stderr, "! frame %zu not written\n", dev->c.frames_arrived);
-    ev_break(dev->loop, EVBREAK_ALL);
+    /* skip frame */
     return;
   }
 
@@ -497,7 +508,7 @@ capture_process(struct devinfo *dev,
   if (!wbf_write(dev, &dev->trg.index, (uint8_t*)&fi, sizeof(fi))) {
     fprintf(stderr, "! write index for frame  %zu failed\n",
             dev->c.frames_arrived);
-    ev_break(dev->loop, EVBREAK_ALL);
+    /* skip frame info (result: frame droped) */
     return;
   }
 }
@@ -622,7 +633,7 @@ int
 main(int argc, char *argv[])
 {
   struct ev_loop *loop = EV_DEFAULT;
-  struct write_thread_context wt_ctx = {0};
+  struct wth_context wth_ctx = {0};
   
   if (!init_device(loop, &devinfo))
     return EXIT_FAILURE;
@@ -634,8 +645,9 @@ main(int argc, char *argv[])
   ev_io_init(&devinfo.ev, camera_cb, devinfo.fd, EV_READ);
   ev_io_start(loop, &devinfo.ev);
 
-  write_thread_alloc(&wt_ctx);
+  write_thread_alloc(&wth_ctx);
 
+  devinfo.trg.ctx = &wth_ctx;
   capture(&devinfo);
 
   ev_run(loop, 0);
@@ -643,7 +655,7 @@ main(int argc, char *argv[])
   ev_io_stop(loop, &devinfo.ev);
   ev_signal_stop(loop, &sigint);
 
-  write_thread_free(&wt_ctx);
+  write_thread_free(&wth_ctx);
   ev_loop_destroy(loop);
 
   return EXIT_SUCCESS;

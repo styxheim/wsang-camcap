@@ -1,58 +1,272 @@
 /* vim: ft=c ff=unix fenc=utf-8 ts=2 sw=2 et
  * file: src/main_write_tread.c
  */
+#include <inttypes.h>
+#include <sys/time.h>
+#include <stdint.h>
+#include <assert.h>
 #include <stdio.h>
 #include <stdbool.h>
 #include <pthread.h>
 #include <stddef.h>
 #include <ev.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include "main.h"
 
-#define log_thread(_level, _fmt, ...) \
-  log("write_thread", _level, _fmt, ##__VA_ARGS__)
+#define WTH_FD_SAFETY_OFFSET 1000
 
-#define ctx_from_loop(_ev_loop) \
-  ((struct write_thread_context*)((char*)(_ev_loop) - offsetof(struct write_thread_context, loop)))
+#define log_info(_fmt, ...) \
+  log("write_thread", "INFO", _fmt, ##__VA_ARGS__)
 
+#define log_debug(_fmt, ...) \
+  log("write_thread", "DEBUG", _fmt, ##__VA_ARGS__)
+
+#define log_error(_fmt, ...) \
+  log("write_thread", "ERROR", _fmt, ##__VA_ARGS__)
+
+#define WRITE_BLOCK_SIZE (1024 * 1024 /* 1MB */)
 static void
 sig_kill_cb(struct ev_loop *loop, ev_async *w, int revents)
 {
-  /*struct write_thread_context *ctx = ctx_from_loop(loop);*/
-  log_thread("INFO", "catch KILL signal. Exit");
+  log_info("catch KILL signal. Exit");
   ev_break(loop, EVBREAK_ALL);
 }
 
 void *
-write_thread(struct write_thread_context *ctx)
+write_thread(struct wth_context *ctx)
 {
   ev_run(ctx->loop, 0);
   return NULL;
 }
 
-bool
-write_thread_alloc(struct write_thread_context *ctx)
+wth_fd wth_open(struct wth_context *ctx, char path[FH_PATH_SIZE + 1])
 {
+  int i;
+
+  for (i = 0u; i < WTH_MAX_FILES; i++) {
+    if (!ctx->fd[i].acquired) {
+      log_debug("open(%s) -> fd#%d", path, i + WTH_FD_SAFETY_OFFSET);
+      ctx->fd[i].acquired = true;
+      ctx->fd[i].fd = -1;
+      ctx->fd[i].expect_close = false;
+      ctx->fd[i].pending_to_write = 0u;
+      memcpy(ctx->fd[i].path, path, sizeof(ctx->fd[i].path));
+      ev_async_send(ctx->loop, &ctx->async_open);
+      return i + WTH_FD_SAFETY_OFFSET;
+    }
+  }
+  log_error("open('%s') -> no free slots", path);
+  return -1;
+}
+
+void wth_close(struct wth_context *ctx, wth_fd fd)
+{
+  fd -= WTH_FD_SAFETY_OFFSET;
+  assert(fd >= 0);
+  assert(fd < WTH_MAX_FILES);
+
+  log_debug("close request for fd#%d", fd);
+
+  if (ctx->fd[fd].fd != -1) {
+   ctx->fd[fd].expect_close = true;
+  }
+
+  ev_async_send(ctx->loop, &ctx->async_open);
+}
+
+struct header {
+  unsigned idx;
+  size_t data_size;
+};
+
+ssize_t wth_write(struct wth_context *ctx, wth_fd fd, uint8_t *p, size_t size)
+{
+  struct header hd = {0};
+
+  fd -= WTH_FD_SAFETY_OFFSET;
+  assert(fd >= 0);
+  assert(fd < WTH_MAX_FILES);
+
+  if (cbf_free_space(&ctx->buffer) < sizeof(hd) + size) {
+    /* no free space */
+    return 0;
+  }
+
+  hd.idx = fd;
+  hd.data_size = size;
+
+  cbf_save(&ctx->buffer, (uint8_t*)&hd, sizeof(hd));
+  cbf_save(&ctx->buffer, p, size);
+
+  ctx->fd[fd].pending_to_write += size;
+
+  ev_async_send(ctx->loop, &ctx->async_write);
+  return size;
+}
+
+static void
+async_write_cb(struct ev_loop *loop, ev_async *w, int revents)
+{
+  uint8_t wrblk[WRITE_BLOCK_SIZE] = {0};
+  struct header hd = {0};
+  struct wth_context *ctx = ev_userdata(loop);
+
+  struct wth_file_desc *fd_desc;
+
+  size_t header_filled = 0u;
+
+  log_debug("async write invoked");
+
+  while (cbf_occupied_space(&ctx->buffer) > 0) {
+    size_t offset = 0u;
+    size_t size;
+    ssize_t written;
+    /* get data */
+    assert(cbf_occupied_space(&ctx->buffer) > sizeof(hd));
+
+    size = cbf_get(&ctx->buffer, wrblk, sizeof(wrblk));
+
+    assert(size > 0u);
+
+    cbf_discard(&ctx->buffer, size);
+
+    while (offset != size) {
+      if (header_filled != sizeof(hd)) {
+        /* full or second part of scattered header */
+        memcpy(((uint8_t*)&hd) + header_filled,
+               wrblk + offset,
+               sizeof(hd) - header_filled);
+        offset += sizeof(hd) - header_filled;
+        header_filled = sizeof(hd);
+      }
+      else if (sizeof(hd) > size - offset) {
+        assert(size - offset > 0u);
+        /* scattered header
+         * copy first part of header
+         */
+        header_filled = size - offset;
+        memcpy(&hd, wrblk + offset, header_filled);
+        /* need more bytes */
+        break;
+      }
+
+      assert(hd.idx < WTH_MAX_FILES);
+
+      fd_desc = &ctx->fd[hd.idx];
+
+      assert(fd_desc->fd != -1);
+      assert(fd_desc->acquired == true);
+      assert(fd_desc->pending_to_write >= hd.data_size);
+
+      if (hd.data_size > size - offset) {
+        /* scattered copy */
+        size_t write_size = size - offset;
+
+        assert(write_size != 0);
+
+        written = write(fd_desc->fd, wrblk + offset, write_size);
+        if (written != write_size) {
+          /* FIXME: what next? */
+          log_error("write(fd#%d) -> written=%"PRIdPTR", expected=%"PRIuPTR": %s",
+                    hd.idx, written, hd.data_size, strerror(errno));
+        }
+        hd.data_size -= write_size;
+        fd_desc->pending_to_write -= write_size;
+        /* need more bytes */
+        break;
+      } else {
+        written = write(fd_desc->fd, wrblk + offset, hd.data_size);
+        if (written != hd.data_size) {
+          /* FIXME: what next? */
+          log_error("write(fd#%d) -> written=%"PRIdPTR", expected=%"PRIuPTR": %s",
+                    hd.idx, written, hd.data_size, strerror(errno));
+        }
+        offset += hd.data_size;
+        fd_desc->pending_to_write -= hd.data_size;
+        /* read next header */
+        header_filled = 0u;
+      }
+    }
+  }
+  /* TODO: */
+
+}
+
+static void
+async_open_cb(struct ev_loop *loop, ev_async *w, int revents)
+{
+  int i;
+  struct wth_context *ctx = ev_userdata(loop);
+  log_debug("async open invoked");
+
+  for (i = 0u; i < WTH_MAX_FILES; i++) {
+    if (ctx->fd[i].acquired) {
+      if (ctx->fd[i].expect_close && ctx->fd[i].pending_to_write == 0u) {
+        log_debug("close fd#%d", i + WTH_FD_SAFETY_OFFSET);
+        if (ctx->fd[i].fd != -1)
+          close(ctx->fd[i].fd);
+        ctx->fd[i].acquired = false;
+      } else if (ctx->fd[i].fd == -1) {
+        log_debug("open fd#%d", i + WTH_FD_SAFETY_OFFSET);
+
+        ctx->fd[i].fd = open(ctx->fd[i].path, O_CREAT | O_TRUNC | O_WRONLY,
+                                              S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP);
+        if (ctx->fd[i].fd == -1) {
+          log_error("sys open(%s) fd#%d failed: %s",
+                    ctx->fd[i].path, i + WTH_FD_SAFETY_OFFSET,
+                    strerror(errno));
+        }
+      }
+    }
+  }
+}
+
+bool
+write_thread_alloc(struct wth_context *ctx)
+{
+  size_t i = 0u;
   memset(ctx, 0, sizeof(*ctx));
-  log_thread("INFO", "allocate write thread");
+  log_info("allocate write thread");
   ctx->loop = ev_loop_new(EVFLAG_AUTO);
+
   ev_async_init(&ctx->sig_kill, sig_kill_cb);
+  ev_async_init(&ctx->async_open, async_open_cb);
+  ev_async_init(&ctx->async_write, async_write_cb);
+
   ev_async_start(ctx->loop, &ctx->sig_kill);
+  ev_async_start(ctx->loop, &ctx->async_open);
+  ev_async_start(ctx->loop, &ctx->async_write);
+
+  ev_set_userdata(ctx->loop, ctx);
+
+  cbf_init(&ctx->buffer, 90 * 1024 * 1024); /* 90 MB */
+
+  for (i = 0u; i < WTH_MAX_FILES; i++) {
+    ctx->fd[i].fd = -1;
+  }
+
   pthread_create(&ctx->thread, NULL, (void*(*)(void*))&write_thread, ctx);
   return true;
 }
 
 void
-write_thread_free(struct write_thread_context *ctx)
+write_thread_free(struct wth_context *ctx)
 {
   void *rval = NULL;
   /* send signal && wait */
-  log_thread("INFO", "wait thread to stop...");
+  log_info("wait thread to stop...");
   ev_async_send(ctx->loop, &ctx->sig_kill);
   pthread_join(ctx->thread, &rval);
 
   /* free */
+  ev_async_stop(ctx->loop, &ctx->async_open);
+  ev_async_stop(ctx->loop, &ctx->async_write);
   ev_async_stop(ctx->loop, &ctx->sig_kill);
+
   ev_loop_destroy(ctx->loop);
+  cbf_destroy(&ctx->buffer);
 }
 
