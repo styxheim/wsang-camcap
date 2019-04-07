@@ -98,8 +98,10 @@ ssize_t wth_write(struct wth_context *ctx, wth_fd fd, uint8_t *p, size_t size)
   hd.idx = fd;
   hd.data_size = size;
 
+  pthread_mutex_lock(&ctx->write_lock);
   cbf_save(&ctx->buffer, (uint8_t*)&hd, sizeof(hd));
   cbf_save(&ctx->buffer, p, size);
+  pthread_mutex_unlock(&ctx->write_lock);
 
   atomic_fetch_add(&ctx->fd[fd].pending_to_write, size);
 
@@ -117,14 +119,15 @@ async_write_cb(struct ev_loop *loop, ev_async *w, int revents)
   struct wth_file_desc *fd_desc;
 
   size_t header_filled = 0u;
-
-  log_debug("async write invoked");
+  size_t total_written = 0u;
 
   while (cbf_occupied_space(&ctx->buffer) > 0) {
     size_t offset = 0u;
     size_t size;
     ssize_t written;
     /* get data */
+    pthread_mutex_lock(&ctx->write_lock);
+
     assert(cbf_occupied_space(&ctx->buffer) > sizeof(hd));
 
     size = cbf_get(&ctx->buffer, wrblk, sizeof(wrblk));
@@ -132,6 +135,7 @@ async_write_cb(struct ev_loop *loop, ev_async *w, int revents)
     assert(size > 0u);
 
     cbf_discard(&ctx->buffer, size);
+    pthread_mutex_unlock(&ctx->write_lock);
 
     while (offset != size) {
       if (header_filled != sizeof(hd)) {
@@ -173,6 +177,7 @@ async_write_cb(struct ev_loop *loop, ev_async *w, int revents)
           log_error("write(fd#%d) -> written=%"PRIdPTR", expected=%"PRIuPTR": %s",
                     hd.idx, written, hd.data_size, strerror(errno));
         }
+        total_written += written;
         hd.data_size -= write_size;
         atomic_fetch_sub(&fd_desc->pending_to_write, write_size);
         /* need more bytes */
@@ -184,6 +189,7 @@ async_write_cb(struct ev_loop *loop, ev_async *w, int revents)
           log_error("write(fd#%d) -> written=%"PRIdPTR", expected=%"PRIuPTR": %s",
                     hd.idx, written, hd.data_size, strerror(errno));
         }
+        total_written += written;
         offset += hd.data_size;
         atomic_fetch_sub(&fd_desc->pending_to_write, hd.data_size);
         /* read next header */
@@ -191,8 +197,7 @@ async_write_cb(struct ev_loop *loop, ev_async *w, int revents)
       }
     }
   }
-  /* TODO: */
-
+  log_debug("async write result: written=%"PRIuPTR, total_written);
 }
 
 static void
@@ -248,6 +253,8 @@ write_thread_alloc(struct wth_context *ctx)
     ctx->fd[i].fd = -1;
   }
 
+  pthread_mutex_init(&ctx->write_lock, NULL);
+
   pthread_create(&ctx->thread, NULL, (void*(*)(void*))&write_thread, ctx);
   return true;
 }
@@ -265,6 +272,8 @@ write_thread_free(struct wth_context *ctx)
   ev_async_stop(ctx->loop, &ctx->async_open);
   ev_async_stop(ctx->loop, &ctx->async_write);
   ev_async_stop(ctx->loop, &ctx->sig_kill);
+
+  pthread_mutex_destroy(&ctx->write_lock);
 
   ev_loop_destroy(ctx->loop);
   cbf_destroy(&ctx->buffer);

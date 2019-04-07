@@ -33,6 +33,8 @@ struct wth_context {
 
   struct circle_buffer buffer;
 
+  pthread_mutex_t write_lock;
+
   pthread_t thread;
 };
 
