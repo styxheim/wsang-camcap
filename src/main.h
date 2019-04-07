@@ -4,6 +4,8 @@
 #ifndef _SRC_MAIN_1554547715_H_
 #define _SRC_MAIN_1554547715_H_
 
+#include <stdatomic.h>
+
 #define log(_module, _level, _fmt, ...) \
   fprintf(stderr, "%s: [%s] " _fmt "\n", _level, _module, ##__VA_ARGS__)
 
@@ -16,7 +18,7 @@ struct wth_file_desc {
   int fd;
   char path[FH_PATH_SIZE + 1];
   bool acquired;
-  size_t pending_to_write;
+  atomic_ulong pending_to_write;
   bool expect_close;
 };
 

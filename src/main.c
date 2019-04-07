@@ -21,9 +21,6 @@
 #include <linux/videodev2.h>
 
 #include "main.h"
-
-#include "frame_index.h"
-#include "circle_buffer.h"
 #include "files.h"
 
 #define LOG_NOISY 0

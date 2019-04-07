@@ -52,7 +52,7 @@ wth_fd wth_open(struct wth_context *ctx, char path[FH_PATH_SIZE + 1])
       ctx->fd[i].acquired = true;
       ctx->fd[i].fd = -1;
       ctx->fd[i].expect_close = false;
-      ctx->fd[i].pending_to_write = 0u;
+      atomic_init(&ctx->fd[i].pending_to_write, 0lu);
       memcpy(ctx->fd[i].path, path, sizeof(ctx->fd[i].path));
       ev_async_send(ctx->loop, &ctx->async_open);
       return i + WTH_FD_SAFETY_OFFSET;
@@ -101,7 +101,7 @@ ssize_t wth_write(struct wth_context *ctx, wth_fd fd, uint8_t *p, size_t size)
   cbf_save(&ctx->buffer, (uint8_t*)&hd, sizeof(hd));
   cbf_save(&ctx->buffer, p, size);
 
-  ctx->fd[fd].pending_to_write += size;
+  atomic_fetch_add(&ctx->fd[fd].pending_to_write, size);
 
   ev_async_send(ctx->loop, &ctx->async_write);
   return size;
@@ -159,7 +159,7 @@ async_write_cb(struct ev_loop *loop, ev_async *w, int revents)
 
       assert(fd_desc->fd != -1);
       assert(fd_desc->acquired == true);
-      assert(fd_desc->pending_to_write >= hd.data_size);
+      assert(atomic_load(&fd_desc->pending_to_write) >= hd.data_size);
 
       if (hd.data_size > size - offset) {
         /* scattered copy */
@@ -174,7 +174,7 @@ async_write_cb(struct ev_loop *loop, ev_async *w, int revents)
                     hd.idx, written, hd.data_size, strerror(errno));
         }
         hd.data_size -= write_size;
-        fd_desc->pending_to_write -= write_size;
+        atomic_fetch_sub(&fd_desc->pending_to_write, write_size);
         /* need more bytes */
         break;
       } else {
@@ -185,7 +185,7 @@ async_write_cb(struct ev_loop *loop, ev_async *w, int revents)
                     hd.idx, written, hd.data_size, strerror(errno));
         }
         offset += hd.data_size;
-        fd_desc->pending_to_write -= hd.data_size;
+        atomic_fetch_sub(&fd_desc->pending_to_write, hd.data_size);
         /* read next header */
         header_filled = 0u;
       }
@@ -204,7 +204,7 @@ async_open_cb(struct ev_loop *loop, ev_async *w, int revents)
 
   for (i = 0u; i < WTH_MAX_FILES; i++) {
     if (ctx->fd[i].acquired) {
-      if (ctx->fd[i].expect_close && ctx->fd[i].pending_to_write == 0u) {
+      if (ctx->fd[i].expect_close && atomic_load(&ctx->fd[i].pending_to_write) == 0u) {
         log_debug("close fd#%d", i + WTH_FD_SAFETY_OFFSET);
         if (ctx->fd[i].fd != -1)
           close(ctx->fd[i].fd);
