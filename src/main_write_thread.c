@@ -203,6 +203,7 @@ async_write_cb(struct ev_loop *loop, ev_async *w, int revents)
 
       fd_desc = open_file(ctx, hd.idx);
       if (!fd_desc) {
+        log_error("skip frame because file not openned");
         /* skip data */
         if (hd.data_size >= size - offset) {
           hd.data_size -= (size - offset);
@@ -246,6 +247,7 @@ async_write_cb(struct ev_loop *loop, ev_async *w, int revents)
         atomic_fetch_sub(&fd_desc->pending_to_write, hd.data_size);
         /* read next header */
         header_filled = 0u;
+        continue;
       }
     }
   }
