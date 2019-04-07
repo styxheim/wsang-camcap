@@ -37,6 +37,8 @@ struct wth_context {
 
   struct circle_buffer buffer;
 
+  unsigned occupied_percent;
+
   pthread_mutex_t write_lock;
 
   pthread_t thread;

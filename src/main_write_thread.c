@@ -86,6 +86,11 @@ ssize_t wth_write(struct wth_context *ctx, wth_fd fd, uint8_t *p, size_t size)
 {
   struct header hd = {0};
 
+  size_t free_space;
+  size_t occupied_space;
+  unsigned occupied_percent;
+  unsigned occupied_percent_last;
+
   fd -= WTH_FD_SAFETY_OFFSET;
   assert(fd >= 0);
   assert(fd < WTH_MAX_FILES);
@@ -101,9 +106,20 @@ ssize_t wth_write(struct wth_context *ctx, wth_fd fd, uint8_t *p, size_t size)
   pthread_mutex_lock(&ctx->write_lock);
   cbf_save(&ctx->buffer, (uint8_t*)&hd, sizeof(hd));
   cbf_save(&ctx->buffer, p, size);
+  free_space = cbf_free_space(&ctx->buffer);
+  occupied_space = cbf_occupied_space(&ctx->buffer);
+  occupied_percent_last = ctx->occupied_percent;
+  occupied_percent = (unsigned)((uint64_t)occupied_space * 100 / (uint64_t)(occupied_space + free_space));
+  ctx->occupied_percent = occupied_percent;
+  atomic_fetch_add(&ctx->fd[fd].pending_to_write, size);
   pthread_mutex_unlock(&ctx->write_lock);
 
-  atomic_fetch_add(&ctx->fd[fd].pending_to_write, size);
+  if (occupied_percent > 95 || occupied_percent / 10 != occupied_percent_last / 10) {
+    log_debug("buffer load: %u%% (total: %"PRIuPTR", free: %"PRIuPTR")",
+              occupied_percent,
+              occupied_space + free_space,
+              free_space);
+  }
 
   ev_async_send(ctx->loop, &ctx->async_write);
   return size;
@@ -148,7 +164,6 @@ async_write_cb(struct ev_loop *loop, ev_async *w, int revents)
   struct wth_file_desc *fd_desc;
 
   size_t header_filled = 0u;
-  size_t total_written = 0u;
 
   while (cbf_occupied_space(&ctx->buffer) > 0) {
     size_t offset = 0u;
@@ -216,7 +231,6 @@ async_write_cb(struct ev_loop *loop, ev_async *w, int revents)
           log_error("write(fd#%d) -> written=%"PRIdPTR", expected=%"PRIuPTR": %s",
                     hd.idx, written, hd.data_size, strerror(errno));
         }
-        total_written += written;
         hd.data_size -= write_size;
         atomic_fetch_sub(&fd_desc->pending_to_write, write_size);
         /* need more bytes */
@@ -228,7 +242,6 @@ async_write_cb(struct ev_loop *loop, ev_async *w, int revents)
           log_error("write(fd#%d) -> written=%"PRIdPTR", expected=%"PRIuPTR": %s",
                     hd.idx, written, hd.data_size, strerror(errno));
         }
-        total_written += written;
         offset += hd.data_size;
         atomic_fetch_sub(&fd_desc->pending_to_write, hd.data_size);
         /* read next header */
@@ -236,7 +249,6 @@ async_write_cb(struct ev_loop *loop, ev_async *w, int revents)
       }
     }
   }
-  log_debug("async write result: written=%"PRIuPTR, total_written);
 }
 
 static void
