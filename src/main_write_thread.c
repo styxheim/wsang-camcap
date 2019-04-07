@@ -109,6 +109,35 @@ ssize_t wth_write(struct wth_context *ctx, wth_fd fd, uint8_t *p, size_t size)
   return size;
 }
 
+static struct wth_file_desc *
+open_file(struct wth_context *ctx, unsigned idx)
+{
+  struct wth_file_desc *fd_desc;
+
+  assert(idx < WTH_MAX_FILES);
+
+  fd_desc = &ctx->fd[idx];
+
+  if (fd_desc->fd != -1)
+    return fd_desc;
+
+  log_debug("open fd#%d", idx + WTH_FD_SAFETY_OFFSET);
+
+  fd_desc->fd = open(ctx->fd[idx].path, O_CREAT | O_TRUNC | O_WRONLY,
+                                        S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP);
+  if (ctx->fd[idx].fd == -1) {
+    log_error("sys open(%s) fd#%d failed: %s",
+              ctx->fd[idx].path, idx + WTH_FD_SAFETY_OFFSET,
+              strerror(errno));
+    return NULL;
+  }
+  else
+    log_debug("open fd#%d[%d]: success", idx + WTH_FD_SAFETY_OFFSET,
+                                         fd_desc->fd);
+
+  return fd_desc;
+}
+
 static void
 async_write_cb(struct ev_loop *loop, ev_async *w, int revents)
 {
@@ -157,11 +186,21 @@ async_write_cb(struct ev_loop *loop, ev_async *w, int revents)
         break;
       }
 
-      assert(hd.idx < WTH_MAX_FILES);
+      fd_desc = open_file(ctx, hd.idx);
+      if (!fd_desc) {
+        /* skip data */
+        if (hd.data_size >= size - offset) {
+          hd.data_size -= (size - offset);
+          /* get new data */
+          break;
+        }
+        else {
+          offset += hd.data_size;
+          /* go to next header */
+          continue;
+        }
+      }
 
-      fd_desc = &ctx->fd[hd.idx];
-
-      assert(fd_desc->fd != -1);
       assert(fd_desc->acquired == true);
       assert(atomic_load(&fd_desc->pending_to_write) >= hd.data_size);
 
@@ -208,23 +247,16 @@ async_open_cb(struct ev_loop *loop, ev_async *w, int revents)
   log_debug("async open invoked");
 
   for (i = 0u; i < WTH_MAX_FILES; i++) {
-    if (ctx->fd[i].acquired) {
-      if (ctx->fd[i].expect_close && atomic_load(&ctx->fd[i].pending_to_write) == 0u) {
-        log_debug("close fd#%d", i + WTH_FD_SAFETY_OFFSET);
-        if (ctx->fd[i].fd != -1)
-          close(ctx->fd[i].fd);
-        ctx->fd[i].acquired = false;
-      } else if (ctx->fd[i].fd == -1) {
-        log_debug("open fd#%d", i + WTH_FD_SAFETY_OFFSET);
+    if (ctx->fd[i].acquired &&
+        ctx->fd[i].expect_close &&
+        atomic_load(&ctx->fd[i].pending_to_write) == 0u) {
+      log_debug("close fd#%d[%d]", i + WTH_FD_SAFETY_OFFSET, ctx->fd[i].fd);
 
-        ctx->fd[i].fd = open(ctx->fd[i].path, O_CREAT | O_TRUNC | O_WRONLY,
-                                              S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP);
-        if (ctx->fd[i].fd == -1) {
-          log_error("sys open(%s) fd#%d failed: %s",
-                    ctx->fd[i].path, i + WTH_FD_SAFETY_OFFSET,
-                    strerror(errno));
-        }
+      if (ctx->fd[i].fd != -1) {
+        close(ctx->fd[i].fd);
+        ctx->fd[i].fd = -1;
       }
+      ctx->fd[i].acquired = false;
     }
   }
 }
