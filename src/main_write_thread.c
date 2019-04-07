@@ -64,11 +64,11 @@ wth_fd wth_open(struct wth_context *ctx, char path[FH_PATH_SIZE + 1])
 
 void wth_close(struct wth_context *ctx, wth_fd fd)
 {
+  log_debug("close request for fd#%d", fd);
+
   fd -= WTH_FD_SAFETY_OFFSET;
   assert(fd >= 0);
   assert(fd < WTH_MAX_FILES);
-
-  log_debug("close request for fd#%d", fd);
 
   if (ctx->fd[fd].fd != -1) {
    ctx->fd[fd].expect_close = true;
