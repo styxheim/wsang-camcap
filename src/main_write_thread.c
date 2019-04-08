@@ -125,7 +125,10 @@ ssize_t wth_write(struct wth_context *ctx, wth_fd fd, uint8_t *p, size_t size)
               free_space);
   }
 
-  ev_async_send(ctx->loop, &ctx->async_write);
+  /* decrease interrupt count */
+  if (occupied_percent > 10) {
+    ev_async_send(ctx->loop, &ctx->async_write);
+  }
   return size;
 }
 
